@@ -165,9 +165,9 @@ export default function ProfilPage() {
 
   if (!loaded) {
     return (
-      <main className="mx-auto max-w-3xl px-6 py-16">
+      <div className="mx-auto max-w-3xl px-6 py-16">
         <div className="flex items-center gap-2 text-slate-500"><Loader2 className="w-4 h-4 animate-spin" /> Chargement du profil...</div>
-      </main>
+      </div>
     );
   }
 
@@ -175,7 +175,7 @@ export default function ProfilPage() {
   const roleCount = splitCsv(rolesCsv).length;
 
   return (
-    <main className="mx-auto max-w-3xl px-6 py-10">
+    <div className="mx-auto max-w-3xl px-6 py-10">
       <div className="mb-6 flex items-center gap-3">
         <Link href="/" className="inline-flex items-center gap-1 text-sm text-slate-500 hover:text-slate-700"><ArrowLeft className="w-4 h-4" /> Accueil</Link>
       </div>
@@ -299,7 +299,7 @@ export default function ProfilPage() {
           {saving ? "Enregistrement..." : "Enregistrer et utiliser ce profil"}
         </button>
       </div>
-    </main>
+    </div>
   );
 }
 

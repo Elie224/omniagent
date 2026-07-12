@@ -12,6 +12,16 @@
   --text-muted: #64748b;
 }
 
+.dark {
+  --bg-base: #020617;
+  --bg-card: #0f172a;
+  --border-soft: #1e293b;
+  --accent: #818cf8;
+  --accent-hover: #6366f1;
+  --text-primary: #f1f5f9;
+  --text-muted: #94a3b8;
+}
+
 html, body {
   height: 100%;
 }
@@ -25,6 +35,14 @@ body {
   color: var(--text-primary);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  transition: background-color 200ms ease, color 200ms ease;
+}
+
+.dark body {
+  background:
+    radial-gradient(1200px 600px at 10% -10%, rgba(99,102,241,0.15), transparent 60%),
+    radial-gradient(900px 500px at 110% 10%, rgba(56,189,248,0.10), transparent 60%),
+    var(--bg-base);
 }
 
 /* Scrollbar douce */
@@ -32,6 +50,8 @@ body {
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 999px; border: 2px solid transparent; background-clip: padding-box; }
 ::-webkit-scrollbar-thumb:hover { background: #94a3b8; border: 2px solid transparent; background-clip: padding-box; }
+.dark ::-webkit-scrollbar-thumb { background: #334155; }
+.dark ::-webkit-scrollbar-thumb:hover { background: #475569; }
 
 /* Skeleton shimmer */
 .skeleton {
@@ -40,10 +60,15 @@ body {
   animation: shimmer 2.5s linear infinite;
   border-radius: 6px;
 }
+.dark .skeleton {
+  background: linear-gradient(90deg, #1e293b 0%, #334155 50%, #1e293b 100%);
+  background-size: 200% 100%;
+}
 
 /* Card hover subtle */
 .card-hover { transition: box-shadow .2s ease, transform .2s ease; }
 .card-hover:hover { box-shadow: 0 6px 24px -6px rgba(15,23,42,0.12); transform: translateY(-1px); }
+.dark .card-hover:hover { box-shadow: 0 6px 24px -6px rgba(0,0,0,0.4); }
 
 /* Focus ring accessible */
 .focus-ring:focus-visible { outline: none; box-shadow: 0 0 0 3px rgba(99,102,241,0.35); border-color: var(--accent); }
