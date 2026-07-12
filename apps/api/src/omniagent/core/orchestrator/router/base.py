@@ -49,6 +49,30 @@ KEYWORD_MAP: dict[Intent, list[str]] = {
 }
 
 
+
+
+# 2) Mapping intent -> workflow declaratif par defaut.
+# Permet de chainer IntentRouter -> WorkflowRegistry sans intervention manuelle.
+INTENT_TO_WORKFLOW = {
+    Intent.JOB_WORKFLOW_RUN: "job_search_dag",
+    Intent.SEARCH_JOB_AND_APPLY: "intent_research",
+}
+
+
+def resolve_workflow_for_intent(intent):
+    """Retourne le nom de workflow par defaut pour un intent, ou None."""
+    name = INTENT_TO_WORKFLOW.get(intent)
+    if name is None:
+        return None
+    try:
+        from omniagent.core.orchestrator.workflows import workflow_registry
+        if workflow_registry.exists(name):
+            return name
+    except Exception:
+        pass
+    return None
+
+
 class IntentRouter:
     """Router hybride : keywords puis LLM (optionnel)."""
 
@@ -86,8 +110,7 @@ class IntentRouter:
         """Classifie via LLM. Conserve un cache cote ModelRouter pour eviter les repeats."""
         labels = ", ".join([
             Intent.SEARCH_JOB_AND_APPLY.value,
-            Intent.SEND_REMINDER.value,
-            Intent.MARKETING_WEEK.value,
+            Intent.JOB_WORKFLOW_RUN.value,
             Intent.UNKNOWN.value,
         ])
         prompt = (

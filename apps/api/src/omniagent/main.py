@@ -1,6 +1,6 @@
 """Application FastAPI principale - architecture refactoree."""
 from contextlib import asynccontextmanager
-from fastapi import Depends, FastAPI, Request
+from fastapi import Depends, FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -26,6 +26,10 @@ async def lifespan(app: FastAPI):
         print(f"[lifespan] init_db ignore: {e}")
     register_all()
     register_all_agents()
+    # Sprint 3 : workflows declaratifs (job_search_dag, cv_refresh, etc.)
+    from omniagent.core.orchestrator.workflows import register_default_workflows
+    n_wf = register_default_workflows()
+    print(f"[lifespan] {n_wf} workflows declaratifs charges")
     from omniagent.core.database import SessionLocal
     from omniagent.core.memory.factory import build_memory_stack
     app.state.db_session_factory = SessionLocal
@@ -129,35 +133,33 @@ class OrchestratorWorkflowRequest(BaseModel):
 
 @app.post("/orchestrator/workflow")
 async def orchestrator_workflow(req: OrchestratorWorkflowRequest, request: Request, user: CurrentUser = Depends(get_current_user)):
-    """Point d entree dedie au JobWorkflowPlanner (pipeline Emploi en DAG, 7 etapes).
-
-    Declenche directement le plan structure (discovery -> filter -> enrich -> match
-    -> cv -> template -> apply) sans passer par l IntentRouter.
-
-    Branchements transverses :
-    - Profil candidat injecte depuis la memoire user
-    - Business observability : chaque etape est enregistree avec tenant_id
-    - Monitoring transverse : compte-rendu global du run
-    """
-    from omniagent.agents.emploi.workflow.planner import job_workflow_planner
-    from omniagent.agents.emploi.workflow import JOB_AGENTS
+    """Point d entree unique pour executer un workflow declaratif."""
+    import time
+    from omniagent.core.orchestrator.workflows import workflow_registry
     from omniagent.core.observability.business.scoring import business_observability
     from omniagent.agents.transverse.subagents.monitoring_agent import run as monitoring_run
-    import time
 
-    plan = job_workflow_planner.build("job_workflow_run", dict(req.context or {}))
+    wf = workflow_registry.get(req.workflow)
+    if wf is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"workflow inconnu: {req.workflow}. Disponibles: {workflow_registry.names()}",
+        )
+
     ctx = dict(req.context or {})
     ctx["dry_run"] = req.dry_run
     ctx["tenant_id"] = user.tenant_id
     ctx["user_id"] = user.user_id
+    ctx["workflow"] = wf.name
+    ctx["workflow_version"] = wf.version
 
-    stack = getattr(request.app.state, "memory_stack", None)
+    stack = getattr(request.app.state, 'memory_stack', None)
     if stack is not None:
         try:
             user_mem = stack.user
-            if hasattr(user_mem, "aget"):
+            if hasattr(user_mem, 'aget'):
                 profile = await user_mem.aget(
-                    "profile:candidate", user_id=user.user_id, tenant_id=user.tenant_id
+                    "profile:candidate", user_id=user.user_id, tenant_id=user.tenant_id,
                 )
             else:
                 profile = user_mem.get("profile:candidate")
@@ -166,60 +168,106 @@ async def orchestrator_workflow(req: OrchestratorWorkflowRequest, request: Reque
         except Exception:
             pass
 
-    step_outputs: dict = {}
-    step_results: dict = {}
-    correlation_id = ctx.get("correlation_id") or f"wf-{int(time.time()*1000)}"
+    from omniagent.agents.emploi.workflow import JOB_AGENTS as _JOB
+    import importlib
+
+    def _resolve_agent_class(agent_name):
+        if agent_name in _JOB:
+            return _JOB[agent_name]
+        try:
+            mod = importlib.import_module("omniagent.agents.transverse.subagents." + agent_name)
+            return getattr(mod, 'run', None)
+        except Exception:
+            return None
+
+    step_outputs = {}
+    step_results = {}
+    correlation_id = ctx.get("correlation_id") or f"wf-{int(time.time() * 1000)}"
     started = time.monotonic()
     overall_status = "completed"
+    done = set()
+    steps_remaining = list(wf.steps)
+
     try:
-        for step in plan.steps:
-            agent_cls = JOB_AGENTS.get(step.agent_name)
-            if agent_cls is None:
-                step_results[step.agent_name] = {
-                    "status": "skipped",
-                    "error": f"unknown sub-agent: {step.agent_name}",
-                }
-                continue
-            agent = agent_cls()
-            t0 = time.monotonic()
-            try:
-                out = await agent.run(
-                    {"step": step.input_template, "context": ctx, "previous": step_outputs, "user_id": user.user_id},
-                    ctx,
-                )
-                dur_ms = (time.monotonic() - t0) * 1000.0
-                step_outputs[step.agent_name] = out
-                step_results[step.agent_name] = {
-                    "status": "success",
-                    "output": out,
-                    "duration_ms": round(dur_ms, 1),
-                }
-                business_observability.record_run(
-                    agent_name=f"workflow.{step.agent_name}",
-                    success=True, duration_ms=dur_ms,
-                    tenant_id=user.tenant_id,
-                )
-            except Exception as e:
-                dur_ms = (time.monotonic() - t0) * 1000.0
-                step_results[step.agent_name] = {
-                    "status": "failed",
-                    "error": str(e),
-                    "duration_ms": round(dur_ms, 1),
-                }
-                business_observability.record_run(
-                    agent_name=f"workflow.{step.agent_name}",
-                    success=False, duration_ms=dur_ms,
-                    tenant_id=user.tenant_id,
-                )
-                overall_status = "partial"
+        while steps_remaining:
+            runnable = [s for s in steps_remaining if all(d in done for d in s.depends_on)]
+            if not runnable:
+                overall_status = "failed"
+                step_results["__dag__"] = {"status": "failed", "error": "aucun step runnable"}
                 break
+            for step in runnable:
+                agent_fn = _resolve_agent_class(step.agent_name)
+                if agent_fn is None:
+                    step_results[step.name] = {
+                        "status": "skipped",
+                        "error": f"agent inconnu: {step.agent_name}",
+                    }
+                    done.add(step.name)
+                    steps_remaining.remove(step)
+                    continue
+                t0 = time.monotonic()
+                try:
+                    if callable(agent_fn):
+                        try:
+                            inst = agent_fn()
+                            if hasattr(inst, 'run'):
+                                out = await inst.run(
+                                    {"step": step.input_template, "context": ctx,
+                                     "previous": step_outputs, "user_id": user.user_id},
+                                    ctx,
+                                )
+                            else:
+                                out = agent_fn({
+                                    "step": step.input_template, "context": ctx,
+                                    "previous": step_outputs, "user_id": user.user_id,
+                                }, ctx)
+                        except Exception:
+                            out = agent_fn({
+                                "step": step.input_template, "context": ctx,
+                                "previous": step_outputs, "user_id": user.user_id,
+                            }, ctx)
+                    else:
+                        out = {"status": "noop"}
+                    dur_ms = (time.monotonic() - t0) * 1000.0
+                    step_outputs[step.name] = out
+                    step_results[step.name] = {
+                        "status": "success",
+                        "output": out,
+                        "duration_ms": round(dur_ms, 1),
+                    }
+                    business_observability.record_run(
+                        agent_name=f"workflow.{step.name}",
+                        success=True, duration_ms=dur_ms,
+                        tenant_id=user.tenant_id,
+                    )
+                except Exception as e:
+                    dur_ms = (time.monotonic() - t0) * 1000.0
+                    step_results[step.name] = {
+                        "status": "failed",
+                        "error": str(e),
+                        "duration_ms": round(dur_ms, 1),
+                    }
+                    business_observability.record_run(
+                        agent_name=f"workflow.{step.name}",
+                        success=False, duration_ms=dur_ms,
+                        tenant_id=user.tenant_id,
+                    )
+                    if step.optional:
+                        done.add(step.name)
+                        steps_remaining.remove(step)
+                        continue
+                    overall_status = "partial"
+                    steps_remaining = []
+                    break
+                done.add(step.name)
+                steps_remaining.remove(step)
     finally:
         total_ms = (time.monotonic() - started) * 1000.0
 
     try:
         await monitoring_run({
             "action": "record",
-            "agent_name": "job_workflow",
+            "agent_name": wf.name,
             "status": "success" if overall_status == "completed" else "partial",
             "run_id": correlation_id,
             "payload": {
@@ -227,18 +275,21 @@ async def orchestrator_workflow(req: OrchestratorWorkflowRequest, request: Reque
                 "user_id": user.user_id,
                 "duration_ms": round(total_ms, 1),
                 "steps": list(step_results.keys()),
-                "workflow": req.workflow,
+                "workflow_version": wf.version,
             },
         }, user_id=user.user_id)
     except Exception:
         pass
 
     return {
-        "workflow": req.workflow,
-        "plan_name": plan.name,
-        "plan_version": plan.version,
+        "workflow": wf.name,
+        "workflow_version": wf.version,
+        "description": wf.description,
+        "plan_name": wf.name,
+        "plan_version": wf.version,
         "correlation_id": correlation_id,
         "status": overall_status,
         "duration_ms": round(total_ms, 1),
         "steps": step_results,
     }
+

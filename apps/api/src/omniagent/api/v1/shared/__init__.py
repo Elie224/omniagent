@@ -1,5 +1,5 @@
 """Routes partagees (auth, health, observabilite, multi-tenant)."""
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, Path
 from pydantic import BaseModel
 
 from omniagent.core.config import settings
@@ -30,6 +30,61 @@ async def metrics(_user: CurrentUser = Depends(get_current_user)):
 @router.get("/business-dashboard")
 async def business_dashboard(user: CurrentUser = Depends(get_current_user)):
     return business_observability.dashboard_for(user.tenant_id)
+
+
+
+
+# Sprint 3 : discovery des workflows declaratifs.
+@router.get("/workflows")
+async def list_workflows(_user: CurrentUser = Depends(get_current_user)):
+    from omniagent.core.orchestrator.workflows import workflow_registry
+    return {"count": len(workflow_registry.names()), "workflows": workflow_registry.list()}
+
+
+
+
+
+@router.get("/workflows/status")
+async def workflows_status(user: CurrentUser = Depends(get_current_user)):
+    from collections import defaultdict
+    tenant_id = user.tenant_id
+    by_wf = defaultdict(lambda: {"runs": 0, "successes": 0, "failures": 0, "duration_ms": 0.0})
+    scores = getattr(business_observability, "_scores_by_tenant", None) or {}
+    for (tid, agent_name), s in scores.items():
+        if tid != tenant_id:
+            continue
+        if not agent_name.startswith("workflow."):
+            continue
+        wf = agent_name[len("workflow."):]
+        b = by_wf[wf]
+        # On lit directement les compteurs sur l instance partagee,
+        # pas via to_dict() qui expose des champs derives.
+        b["runs"]      += int(getattr(s, "runs", 0))
+        b["successes"] += int(getattr(s, "successes", 0))
+        b["failures"]  += int(getattr(s, "failures", 0))
+        b["duration_ms"] += float(getattr(s, "total_duration_ms", 0.0))
+    workflows = []
+    for wf, agg in by_wf.items():
+        runs = agg["runs"] or 0
+        workflows.append({
+            "workflow": wf,
+            "runs": runs,
+            "successes": agg["successes"],
+            "failures": agg["failures"],
+            "success_rate": round(agg["successes"] / runs, 3) if runs else 0.0,
+            "avg_duration_ms": round(agg["duration_ms"] / runs, 1) if runs else 0.0,
+        })
+    workflows.sort(key=lambda x: x["workflow"])
+    return {"tenant_id": tenant_id, "count": len(workflows), "workflows": workflows}
+
+
+@router.get("/workflows/{name}")
+async def get_workflow(name: str, _user: CurrentUser = Depends(get_current_user)):
+    from omniagent.core.orchestrator.workflows import workflow_registry
+    wf = workflow_registry.get(name)
+    if wf is None:
+        raise HTTPException(status_code=404, detail="workflow inconnu: " + name)
+    return wf.to_dict()
 
 
 @router.get("/events/recent")
@@ -93,35 +148,3 @@ async def events_query(
 # Sprint 3 : tableau de bord workflow par tenant.
 # Regroupe les compteurs enregistres par orchestrator_workflow via
 # business_observability.record_run(agent_name="workflow.<step>", ...).
-@router.get("/workflows/status")
-async def workflows_status(user: CurrentUser = Depends(get_current_user)):
-    from collections import defaultdict
-    tenant_id = user.tenant_id
-    by_wf = defaultdict(lambda: {"runs": 0, "successes": 0, "failures": 0, "duration_ms": 0.0})
-    scores = getattr(business_observability, "_scores_by_tenant", None) or {}
-    for (tid, agent_name), s in scores.items():
-        if tid != tenant_id:
-            continue
-        if not agent_name.startswith("workflow."):
-            continue
-        wf = agent_name[len("workflow."):]
-        b = by_wf[wf]
-        # On lit directement les compteurs sur l instance partagee,
-        # pas via to_dict() qui expose des champs derives.
-        b["runs"]      += int(getattr(s, "runs", 0))
-        b["successes"] += int(getattr(s, "successes", 0))
-        b["failures"]  += int(getattr(s, "failures", 0))
-        b["duration_ms"] += float(getattr(s, "total_duration_ms", 0.0))
-    workflows = []
-    for wf, agg in by_wf.items():
-        runs = agg["runs"] or 0
-        workflows.append({
-            "workflow": wf,
-            "runs": runs,
-            "successes": agg["successes"],
-            "failures": agg["failures"],
-            "success_rate": round(agg["successes"] / runs, 3) if runs else 0.0,
-            "avg_duration_ms": round(agg["duration_ms"] / runs, 1) if runs else 0.0,
-        })
-    workflows.sort(key=lambda x: x["workflow"])
-    return {"tenant_id": tenant_id, "count": len(workflows), "workflows": workflows}
