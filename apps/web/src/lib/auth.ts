@@ -93,7 +93,7 @@ export async function signup(input: {
   const tokens = await request<AuthTokens>("/api/v1/auth/signup", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: input,
+    body: JSON.stringify(input),
   });
   setAuth(tokens);
   return tokens;
@@ -107,7 +107,7 @@ export async function login(input: {
   const tokens = await request<AuthTokens>("/api/v1/auth/login", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: input,
+    body: JSON.stringify(input),
   });
   setAuth(tokens);
   // Fetch /me to capture user info; tolerate failure.

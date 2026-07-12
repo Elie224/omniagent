@@ -5,6 +5,8 @@ services:
       dockerfile: Dockerfile
     container_name: omniagent-api
     restart: unless-stopped
+    env_file:
+      - ../../apps/api/.env
     environment:
       PYTHONPATH: /app/src
       OMNIAGENT_FORCE_MEMORY: "1"

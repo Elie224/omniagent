@@ -97,6 +97,52 @@ def test_employment_search_requires_auth(client):
     assert r.status_code in (200, 403)
 
 
+def test_employment_search_returns_offers_and_backend_diagnostics(client):
+    r = client.post(
+        "/api/v1/employment/search",
+        json={
+            "keywords": "data",
+            "location": "Paris",
+            "max_results": 5,
+            "include_france_travail": True,
+            "include_linkedin": False,
+            "include_indeed": False,
+            "include_hellowork": False,
+        },
+        headers={"X-User": "demo", "X-Role": "admin"},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["status"] == "ok"
+    assert isinstance(body["total_offers"], int)
+    assert body["total_offers"] >= 0
+    assert isinstance(body["by_platform"], dict)
+    assert "backend_used" in body
+    assert "backend_errors" in body
+    assert isinstance(body["offers_sample"], list)
+
+
+def test_employment_search_respects_selected_sources(client):
+    r = client.post(
+        "/api/v1/employment/search",
+        json={
+            "keywords": "data",
+            "location": "Paris",
+            "max_results": 5,
+            "include_france_travail": True,
+            "include_linkedin": False,
+            "include_indeed": False,
+            "include_hellowork": False,
+        },
+        headers={"X-User": "demo", "X-Role": "admin"},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert set(body["backend_errors"].keys()) <= {"france_travail"}
+    assert set(body["by_platform"].keys()) <= {"france_travail"}
+    assert all(o.get("source") == "france_travail" for o in body["offers_sample"])
+
+
 def test_transverse_memory(client):
     r = client.post("/api/v1/shared/memory", json={
         "action": "remember", "scope": "session",

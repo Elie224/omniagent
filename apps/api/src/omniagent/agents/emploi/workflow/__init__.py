@@ -166,20 +166,20 @@ class JobDiscoveryAgent:
                 JobSearcher, MockBackend, ConnectorBackend, MultiSourceBackend,
             )
             criteria = self._build_criteria(input_data, seed)
+            selected_sources = input_data.get("sources", []) or []
+            backends = []
+            for source in selected_sources:
+                if source in {"adzuna", "france_travail", "wttj", "apec", "themuse"}:
+                    backends.append(ConnectorBackend(source))
+                elif source in {"linkedin", "indeed", "hellowork"}:
+                    backends.append(MockBackend(source))
+            if not backends:
+                backends = [MockBackend("linkedin")]
             # MultiSourceBackend : vrais connecteurs en priorite, MockBackend en fallback
             # (le fallback garantit qu on a toujours au moins 1 source qui repond,
             # meme en dev sans cles API).
             multi = MultiSourceBackend(
-                [
-                    ConnectorBackend("adzuna"),
-                    ConnectorBackend("france_travail"),
-                    ConnectorBackend("wttj"),
-                    ConnectorBackend("apec"),
-                    ConnectorBackend("themuse"),
-                    MockBackend("linkedin"),
-                    MockBackend("indeed"),
-                    MockBackend("hellowork"),
-                ],
+                backends,
                 name="job_discovery",
                 use_breaker=True,
             )

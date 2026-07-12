@@ -19,6 +19,38 @@ async def health():
         "modules": settings.active_modules,
     }
 
+# Sprint 4 : health des connecteurs plateformes (Sprint 4 etape 1 = France Travail).
+# Permet de verifier depuis l UI ou un monitoring externe si un connecteur est
+# en mode reel (creds OK) ou en fallback mock (creds absentes / rate-limited).
+@router.get("/connectors/{source}/health")
+async def connector_health(
+    source: str = Path(..., description="Nom du connecteur (ex: france_travail, adzuna, wttj)"),
+    _user: CurrentUser = Depends(get_current_user),
+):
+    from omniagent.connectors.manager import connector_manager
+    conn = connector_manager.get(source)
+    if conn is None:
+        raise HTTPException(status_code=404, detail=f"connecteur inconnu: {source}")
+    info: dict = {
+        "source": source,
+        "available": True,
+        "configured": getattr(conn, "is_configured", False),
+    }
+    # Si le connecteur expose health_check(), on l appelle
+    hc = getattr(conn, "health_check", None)
+    if hc is not None:
+        try:
+            import asyncio
+            data = hc() if not asyncio.iscoroutinefunction(hc) else await hc()
+            if isinstance(data, dict):
+                info.update(data)
+            else:
+                info["health_ok"] = bool(data)
+        except Exception as e:
+            info["health_error"] = f"{type(e).__name__}: {e}"
+    return info
+
+
 
 @router.get("/metrics")
 async def metrics(_user: CurrentUser = Depends(get_current_user)):

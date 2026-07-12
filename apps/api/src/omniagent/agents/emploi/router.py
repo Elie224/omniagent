@@ -12,6 +12,7 @@ Vague B : focus Emploi. Endpoints :
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from typing import Literal
+from collections import Counter
 
 from omniagent.auth.dependencies import CurrentUser, get_current_user, require_module_access
 from omniagent.agents.emploi.profile import (
@@ -48,6 +49,7 @@ class SearchCriteria(BaseModel):
     keywords: str
     location: str = "France"
     contract: Literal["stage", "alternance", "emploi", "all"] = "all"
+    include_france_travail: bool = True
     include_linkedin: bool = True
     include_indeed: bool = True
     include_hellowork: bool = True
@@ -59,6 +61,8 @@ class SearchResponse(BaseModel):
     total_offers: int
     by_platform: dict[str, int]
     offers_sample: list[dict]
+    backend_used: str | None = None
+    backend_errors: dict[str, str] = Field(default_factory=dict)
 
 
 class ApplyRequest(BaseModel):
@@ -168,10 +172,52 @@ async def _adelete(user_mem, key: str, user_id: str, tenant_id: str):
 @router.post("/search", response_model=SearchResponse)
 async def search_offers(
     criteria: SearchCriteria,
-    _user: CurrentUser = Depends(require_module_access("emploi", "agent_emploi")),
+    user: CurrentUser = Depends(require_module_access("emploi", "agent_emploi")),
 ):
-    """Recherche d offres sur les plateformes activees (delegue a l orchestrateur)."""
-    return SearchResponse(status="queued", total_offers=0, by_platform={}, offers_sample=[])
+    """Recherche d offres sur les plateformes activees.
+
+    Route legere pour recuperer des offres sans declencher tout le workflow.
+    Reutilise l agent de discovery afin de garder le meme comportement que
+    l orchestrateur, y compris France Travail et les fallbacks de dev.
+    """
+    from omniagent.agents.emploi.workflow import JobDiscoveryAgent
+
+    sources: list[str] = []
+    if criteria.include_france_travail:
+        sources.append("france_travail")
+    if criteria.include_linkedin:
+        sources.append("linkedin")
+    if criteria.include_indeed:
+        sources.append("indeed")
+    if criteria.include_hellowork:
+        sources.append("hellowork")
+    if not sources:
+        raise HTTPException(status_code=400, detail="aucune source activee")
+
+    discovery = JobDiscoveryAgent()
+    result = await discovery.run(
+        {
+            "query": criteria.keywords,
+            "location": criteria.location,
+            "contract": criteria.contract,
+            "max_results": criteria.max_results,
+            "sources": sources,
+        },
+        {
+            "tenant_id": user.tenant_id,
+            "user_id": user.user_id,
+        },
+    )
+    offers = result.get("offers") or []
+    by_platform = dict(Counter((o.get("source") or "unknown") for o in offers))
+    return SearchResponse(
+        status="ok",
+        total_offers=len(offers),
+        by_platform=by_platform,
+        offers_sample=offers[: min(len(offers), criteria.max_results)],
+        backend_used=result.get("backend_used"),
+        backend_errors=result.get("backend_errors") or {},
+    )
 
 
 @router.post("/apply")

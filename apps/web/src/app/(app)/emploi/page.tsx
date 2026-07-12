@@ -38,6 +38,16 @@ interface WorkflowResult {
   offers?: Offer[];
 }
 
+interface ConnectorHealth {
+  source: string;
+  available: boolean;
+  configured: boolean;
+  mode?: string;
+  token_ok?: boolean;
+  token_cached?: boolean;
+  token_expires_in_s?: number;
+}
+
 interface OrchestratorResponse {
   intent?: string;
   plan?: string;
@@ -169,10 +179,27 @@ function extractOffers(payload: OrchestratorResponse | null): Offer[] {
   if (!payload || !payload.results) return [];
   const out: Offer[] = [];
   for (const r of Object.values(payload.results)) {
-    const o = (r && (r as any).offers) as Offer[] | undefined;
+    const o = ((r && (r as any).offers) || (r && (r as any).output?.offers)) as Offer[] | undefined;
     if (Array.isArray(o)) out.push(...o);
   }
   return out;
+}
+
+function getFranceTravailResultMode(offers: Offer[]): "live" | "mock" | null {
+  const franceTravailOffers = offers.filter((offer) => (offer.source || "").toLowerCase().includes("france_travail"));
+  if (franceTravailOffers.length === 0) return null;
+  const allMock = franceTravailOffers.every((offer) => {
+    const identifier = offer.offer_id || offer.id || "";
+    return identifier.startsWith("FT-MOCK-");
+  });
+  return allMock ? "mock" : "live";
+}
+
+function connectorTone(health: ConnectorHealth | null): string {
+  if (!health) return "border-slate-200 bg-slate-50 text-slate-600";
+  if (health.token_ok) return "border-emerald-200 bg-emerald-50 text-emerald-800";
+  if (health.configured) return "border-amber-200 bg-amber-50 text-amber-800";
+  return "border-slate-200 bg-slate-50 text-slate-600";
 }
 
 export default function EmploiPage() {
@@ -182,6 +209,7 @@ export default function EmploiPage() {
   const [correlationId, setCorrelationId] = useState<string | null>(null);
   const [orchestrator, setOrchestrator] = useState<OrchestratorResponse | null>(null);
   const [offers, setOffers] = useState<Offer[]>([]);
+  const [franceTravailHealth, setFranceTravailHealth] = useState<ConnectorHealth | null>(null);
   const [globalError, setGlobalError] = useState<string | null>(null);
   const [selected, setSelected] = useState<Offer | null>(null);
   const [templateChoice, setTemplateChoice] = useState<string>("moderne");
@@ -191,6 +219,29 @@ export default function EmploiPage() {
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => () => { if (pollRef.current) clearInterval(pollRef.current); }, []);
+
+  const refreshFranceTravailHealth = useCallback(async () => {
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => controller.abort(), 4000);
+    try {
+      const resp = await fetch(API.shared.connectorHealth("france_travail"), {
+        method: "GET",
+        headers: devAuthHeaders("admin"),
+        signal: controller.signal,
+      });
+      if (!resp.ok) return;
+      const data: ConnectorHealth = await resp.json();
+      setFranceTravailHealth(data);
+    } catch {
+      // best effort only
+    } finally {
+      window.clearTimeout(timeoutId);
+    }
+  }, []);
+
+  useEffect(() => {
+    refreshFranceTravailHealth();
+  }, [refreshFranceTravailHealth]);
 
   function toggleSource(id: string, disabled?: boolean) {
     if (disabled) return;
@@ -259,6 +310,7 @@ export default function EmploiPage() {
 
       const extracted = extractOffers(data);
       setOffers(extracted);
+      void refreshFranceTravailHealth();
 
       const stepMap: Record<string, StepStatus> = {};
       if (data.results) {
@@ -281,6 +333,8 @@ export default function EmploiPage() {
       if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
     }
   }, [form, running]);
+
+  const franceTravailResultMode = useMemo(() => getFranceTravailResultMode(matchedOffers), [matchedOffers]);
 
   function onGenerateCV(o: Offer) {
     setSelected(o);
@@ -443,6 +497,33 @@ export default function EmploiPage() {
             <span className="ml-auto text-sm text-slate-500">{matchedOffers.length} offre{matchedOffers.length > 1 ? "s" : ""}</span>
           </div>
 
+          {(form.sources.includes("france_travail") || franceTravailResultMode) ? (
+            <div className={"mb-5 rounded-xl border p-4 " + connectorTone(franceTravailHealth)}>
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <div className="text-sm font-medium">France Travail</div>
+                  <div className="mt-1 text-xs opacity-80">
+                    {franceTravailHealth?.token_ok
+                      ? "Connecteur live actif"
+                      : franceTravailHealth?.configured
+                        ? "Connecteur configure, verification token requise"
+                        : "Connecteur non configure"}
+                  </div>
+                </div>
+                <div className="text-right text-xs">
+                  <div>
+                    Etat API : <span className="font-medium">{franceTravailHealth?.token_ok ? "live" : franceTravailHealth?.configured ? "degrade" : "mock"}</span>
+                  </div>
+                  {franceTravailResultMode ? (
+                    <div className="mt-1">
+                      Derniere recherche : <span className="font-medium">{franceTravailResultMode === "live" ? "offres live" : "fallback mock"}</span>
+                    </div>
+                  ) : null}
+                </div>
+              </div>
+            </div>
+          ) : null}
+
           {matchedOffers.length === 0 ? (
             <p className="text-sm text-slate-400">Aucune offre. Lance une mission pour demarrer.</p>
           ) : (
@@ -460,7 +541,12 @@ export default function EmploiPage() {
                     </div>
                     <div className="mt-2 flex items-center gap-3 text-xs text-slate-500">
                       <span className="inline-flex items-center gap-1"><MapPin className="w-3 h-3" />{o.location || "-"}</span>
-                      <span className="inline-flex items-center gap-1">{sourceBadge(o.source)} {o.source || "-"}</span>
+                      <span className="inline-flex items-center gap-1">{sourceBadge(o.source)} {sourceLabel(o.source)}</span>
+                      {(o.source || "").toLowerCase().includes("france_travail") ? (
+                        <span className={"inline-flex items-center rounded-full px-2 py-0.5 font-medium " + (franceTravailResultMode === "live" ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700")}>
+                          {franceTravailResultMode === "live" ? "live" : "mock"}
+                        </span>
+                      ) : null}
                     </div>
                     <div className="mt-3 flex items-center gap-2">
                       <button type="button" onClick={() => onGenerateCV(o)} className="inline-flex items-center gap-1 px-3 py-1.5 rounded-md bg-indigo-600 text-white text-xs font-medium hover:bg-indigo-500"><FileText className="w-3.5 h-3.5" /> Adapter mon CV</button>

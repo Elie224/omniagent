@@ -23,6 +23,9 @@ export const API = {
       `/api/api/v1/shared/events/query?correlation_id=${encodeURIComponent(correlationId)}`,
     business: "/api/api/v1/shared/business-dashboard",
   },
+  shared: {
+    connectorHealth: (source: string) => `/api/api/v1/shared/connectors/${encodeURIComponent(source)}/health`,
+  },
   // Profil candidat (Vague B) : sert au matching CV <-> offres.
   profile: {
     get:        "/api/api/v1/employment/profile",
