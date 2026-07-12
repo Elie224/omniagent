@@ -1,0 +1,7 @@
+{
+  "name": "omniagent",
+  "version": "0.1.0",
+  "description": "Multi-platform AI agent SaaS",
+  "private": true,
+  "workspaces": ["apps/*", "packages/*"]
+}

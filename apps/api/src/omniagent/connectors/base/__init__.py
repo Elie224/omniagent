@@ -1,0 +1,1 @@
+"""Interface commune des connecteurs."""

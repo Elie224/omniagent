@@ -1,0 +1,1 @@
+"""Registre des agents et connecteurs (auto-discovery)."""

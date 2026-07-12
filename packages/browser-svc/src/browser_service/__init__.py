@@ -1,0 +1,1 @@
+"""Browser Service : couche d'abstraction au-dessus de Playwright."""

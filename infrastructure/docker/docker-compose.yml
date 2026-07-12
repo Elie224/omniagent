@@ -1,0 +1,84 @@
+services:
+  api:
+    build:
+      context: ../../apps/api
+      dockerfile: Dockerfile
+    container_name: omniagent-api
+    restart: unless-stopped
+    environment:
+      PYTHONPATH: /app/src
+      OMNIAGENT_FORCE_MEMORY: "1"
+      OMNIAGENT_ENV: development
+    # Port hote 18000 -> port container 8000.
+    # Le port 8000 de l hote est squatte par WSL, on decale de 1000.
+    ports:
+      - "18000:8000"
+    volumes:
+      - ../../apps/api/src:/app/src
+      - api_storage:/app/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/docs',timeout=3).status==200 else 1)"]
+      interval: 15s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  web:
+    build:
+      context: ../../apps/web
+      dockerfile: Dockerfile
+    container_name: omniagent-web
+    restart: unless-stopped
+    depends_on:
+      - api
+    environment:
+      # Container-to-container : service name `api` sur son port interne 8000.
+      NEXT_PUBLIC_API_URL: http://api:8000
+    ports:
+      - "13000:3000"
+    volumes:
+      - ../../apps/web/src:/app/src
+      - ../../apps/web/public:/app/public
+
+  # Profils "db" : ne demarrent que si tu fais  docker compose --profile db up -d
+  redis:
+    profiles: ["db"]
+    image: redis:7-alpine
+    container_name: omniagent-redis
+    restart: unless-stopped
+    ports:
+      - "16379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  postgres:
+    profiles: ["db"]
+    image: postgres:16-alpine
+    container_name: omniagent-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: omniagent
+      POSTGRES_PASSWORD: omniagent
+      POSTGRES_DB: omniagent
+    ports:
+      - "15432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U omniagent"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  redis_data:
+  postgres_data:
+  api_storage:

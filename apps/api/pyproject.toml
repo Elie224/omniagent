@@ -1,0 +1,18 @@
+[project]
+name = "omniagent-api"
+version = "0.1.0"
+description = "OmniAgent API"
+requires-python = ">=3.11"
+dependencies = []
+dynamic = ["dependencies"]
+
+[tool.setuptools.dynamic]
+dependencies = {file = ["requirements.txt"]}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = ["src"]

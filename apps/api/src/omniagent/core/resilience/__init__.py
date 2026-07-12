@@ -1,0 +1,1 @@
+"""Resilience : classification des erreurs, compensation, saga pattern."""

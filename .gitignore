@@ -1,0 +1,48 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+.venv/
+venv/
+env/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# Node
+node_modules/
+.next/
+out/
+build/
+
+# Env
+.env
+.env.local
+.env.*.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs runtime (lances par uvicorn/next en dev)
+backend.log
+backend.log.err
+frontend.log
+uvicorn.log
+_server.err.log
+_server.log
+_next.log
+
+# Artefacts tests temporaires
+.patches/
+
+# Fichiers de test/debug racine
+test_auth_prod.py
+test_results.txt
+_p_prefix.py

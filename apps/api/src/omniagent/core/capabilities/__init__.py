@@ -1,0 +1,1 @@
+"""Capability registry : decouverte dynamique des capacites du systeme."""

@@ -1,0 +1,1 @@
+"""Stockage S3 / local pour CV, lettres, factures PDF."""
