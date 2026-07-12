@@ -174,11 +174,33 @@ async def orchestrator_workflow(req: OrchestratorWorkflowRequest, request: Reque
     def _resolve_agent_class(agent_name):
         if agent_name in _JOB:
             return _JOB[agent_name]
-        try:
-            mod = importlib.import_module("omniagent.agents.transverse.subagents." + agent_name)
-            return getattr(mod, 'run', None)
-        except Exception:
-            return None
+        # Strategie de resolution des subagents :
+        # 1) nom direct : omniagent.agents.X.subagents.<agent_name>
+        # 2) avec suffixe _agent : ...subagents.<agent_name>_agent
+        # 3) transverse : ...transverse.subagents.<agent_name>[_agent]
+        candidates = set()
+        candidates.add(agent_name)
+        # Variantes : ajouter/retirer le suffixe _agent
+        for v in [agent_name, agent_name.removesuffix("_agent"), agent_name + "_agent",
+                  agent_name.removeprefix("agent_"),
+                  agent_name.removeprefix("agent_") + "_agent",
+                  agent_name.removeprefix("agent_").removesuffix("_agent")]:
+            if v:
+                candidates.add(v)
+        namespaces = [
+            "omniagent.agents.emploi.subagents.",
+            "omniagent.agents.transverse.subagents.",
+        ]
+        for ns in namespaces:
+            for cand in candidates:
+                try:
+                    mod = importlib.import_module(ns + cand)
+                    fn = getattr(mod, 'run', None)
+                    if fn is not None:
+                        return fn
+                except Exception:
+                    continue
+        return None
 
     step_outputs = {}
     step_results = {}
@@ -208,26 +230,34 @@ async def orchestrator_workflow(req: OrchestratorWorkflowRequest, request: Reque
                 t0 = time.monotonic()
                 try:
                     if callable(agent_fn):
-                        try:
-                            inst = agent_fn()
-                            if hasattr(inst, 'run'):
-                                out = await inst.run(
-                                    {"step": step.input_template, "context": ctx,
-                                     "previous": step_outputs, "user_id": user.user_id},
-                                    ctx,
-                                )
+                        # Cas 1 : classe (JOB_AGENTS). On instancie et on appelle .run().
+                        # Cas 2 : fonction async (subagents emploi/transverse). Appel direct.
+                        payload = {
+                            "step": step.input_template,
+                            "context": ctx,
+                            "previous": step_outputs,
+                            "user_id": user.user_id,
+                        }
+                        if not isinstance(agent_fn, type):
+                            # Fonction : appel direct async-safe.
+                            result = agent_fn(payload, user.user_id)
+                            if hasattr(result, "__await__"):
+                                out = await result
                             else:
-                                out = agent_fn({
-                                    "step": step.input_template, "context": ctx,
-                                    "previous": step_outputs, "user_id": user.user_id,
-                                }, ctx)
-                        except Exception:
-                            out = agent_fn({
-                                "step": step.input_template, "context": ctx,
-                                "previous": step_outputs, "user_id": user.user_id,
-                            }, ctx)
+                                out = result
+                        else:
+                            # Classe : instanciation puis .run()
+                            try:
+                                inst = agent_fn()
+                                if hasattr(inst, "run"):
+                                    out = await inst.run(payload, ctx)
+                                else:
+                                    out = agent_fn(payload, ctx)
+                            except Exception:
+                                out = agent_fn(payload, ctx)
                     else:
                         out = {"status": "noop"}
+
                     dur_ms = (time.monotonic() - t0) * 1000.0
                     step_outputs[step.name] = out
                     step_results[step.name] = {

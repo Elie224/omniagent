@@ -17,6 +17,9 @@ from omniagent.agents.emploi.subagents.apec_agent import run as run_apec
 from omniagent.agents.emploi.subagents.themuse_agent import run as run_themuse
 from omniagent.agents.emploi.subagents.cv_agent import run as run_cv
 from omniagent.agents.emploi.subagents.lettre_agent import run as run_lettre
+from omniagent.agents.emploi.subagents.interview_coach_agent import run as run_interview_coach
+from omniagent.agents.emploi.subagents.salary_benchmark_agent import run as run_salary_benchmark
+from omniagent.agents.emploi.subagents.followup_agent import run as run_followup
 from omniagent.agents.transverse.subagents.memory_agent import run as run_memory
 from omniagent.agents.transverse.subagents.knowledge_agent import run as run_knowledge
 from omniagent.agents.transverse.subagents.monitoring_agent import run as run_monitoring
@@ -60,6 +63,16 @@ def register_all_agents() -> None:
         AgentSpec("agent_lettre", "emploi", "specialiste",
                   "Generation lettre de motivation", run_lettre,
                   dependencies=["agent_cv"]),
+
+        AgentSpec("agent_interview_coach", "emploi", "specialiste",
+                  "Preparation aux entretiens (questions, pitch, red flags)", run_interview_coach,
+                  dependencies=["agent_emploi"]),
+        AgentSpec("agent_salary_benchmark", "emploi", "specialiste",
+                  "Benchmark salarial par role/ville/experience", run_salary_benchmark,
+                  dependencies=["agent_emploi"]),
+        AgentSpec("agent_followup", "emploi", "specialiste",
+                  "Relance automatique des candidatures envoyees", run_followup,
+                  dependencies=["agent_emploi"]),
 
         # ---- Agents transverses (5) ----
         AgentSpec("agent_memory", "transverse", "specialiste",

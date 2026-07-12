@@ -401,3 +401,64 @@ async def download_cv_endpoint(request: Request,
         raise HTTPException(status_code=404, detail="Fichier physique manquant")
     return FileResponse(path=str(p), media_type="application/pdf",
                          filename=meta.get("filename", "cv.pdf"))
+
+
+# ---------- Sprint 3b : 3 nouveaux agents (interview, salary, followup) ----------
+
+class InterviewCoachRequest(BaseModel):
+    offer: dict = Field(default_factory=dict)
+    profile: dict = Field(default_factory=dict)
+
+
+@router.post("/interview/prepare", dependencies=[Depends(require_module_access("emploi", "agent_interview_coach"))])
+async def interview_prepare(req: InterviewCoachRequest,
+                             user: CurrentUser = Depends(get_current_user)):
+    """Prepare le candidat a un entretien (questions, pitch, red flags)."""
+    from omniagent.agents.emploi.subagents.interview_coach_agent import run as run_agent
+    out = await run_agent(
+        {"offer": req.offer, "profile": req.profile},
+        user_id=user.user_id,
+    )
+    return {"status": "ok", "user_id": user.user_id, "tenant_id": user.tenant_id, **out}
+
+
+class SalaryBenchmarkRequest(BaseModel):
+    role: str = ""
+    city: str = ""
+    years_experience: int = 0
+    declared_salary: float | None = None
+
+
+@router.post("/salary/benchmark", dependencies=[Depends(require_module_access("emploi", "agent_salary_benchmark"))])
+async def salary_benchmark(req: SalaryBenchmarkRequest,
+                            user: CurrentUser = Depends(get_current_user)):
+    """Retourne la fourchette salariale estimee + arguments de negociation."""
+    from omniagent.agents.emploi.subagents.salary_benchmark_agent import run as run_agent
+    out = await run_agent(
+        {"role": req.role, "city": req.city,
+         "years_experience": req.years_experience,
+         "declared_salary": req.declared_salary},
+        user_id=user.user_id,
+    )
+    return {"status": "ok", "user_id": user.user_id, "tenant_id": user.tenant_id, **out}
+
+
+class FollowupRequest(BaseModel):
+    applications: list[dict] = Field(default_factory=list)
+    profile: dict = Field(default_factory=dict)
+    tone: str = "formel"
+    threshold_days: int = 5
+
+
+@router.post("/followup/generate", dependencies=[Depends(require_module_access("emploi", "agent_followup"))])
+async def followup_generate(req: FollowupRequest,
+                             request: Request,
+                             user: CurrentUser = Depends(get_current_user)):
+    """Genere des emails de relance pour les candidatures J+threshold_days."""
+    from omniagent.agents.emploi.subagents.followup_agent import run as run_agent
+    out = await run_agent(
+        {"applications": req.applications, "profile": req.profile,
+         "tone": req.tone, "threshold_days": req.threshold_days},
+        user_id=user.user_id,
+    )
+    return {"status": "ok", "user_id": user.user_id, "tenant_id": user.tenant_id, **out}
