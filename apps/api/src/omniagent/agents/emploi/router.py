@@ -419,7 +419,15 @@ async def interview_prepare(req: InterviewCoachRequest,
         {"offer": req.offer, "profile": req.profile},
         user_id=user.user_id,
     )
-    return {"status": "ok", "user_id": user.user_id, "tenant_id": user.tenant_id, **out}
+    # Aplatir outputs_produced pour les champs metier (match_score, themes, ...)
+    produced = out.get("outputs_produced") or {}
+    return {
+        "status": "ok",
+        "user_id": user.user_id,
+        "tenant_id": user.tenant_id,
+        **out,
+        **produced,
+    }
 
 
 class SalaryBenchmarkRequest(BaseModel):
@@ -440,7 +448,14 @@ async def salary_benchmark(req: SalaryBenchmarkRequest,
          "declared_salary": req.declared_salary},
         user_id=user.user_id,
     )
-    return {"status": "ok", "user_id": user.user_id, "tenant_id": user.tenant_id, **out}
+    produced = out.get("outputs_produced") or {}
+    return {
+        "status": "ok",
+        "user_id": user.user_id,
+        "tenant_id": user.tenant_id,
+        **out,
+        **produced,
+    }
 
 
 class FollowupRequest(BaseModel):
@@ -461,4 +476,11 @@ async def followup_generate(req: FollowupRequest,
          "tone": req.tone, "threshold_days": req.threshold_days},
         user_id=user.user_id,
     )
-    return {"status": "ok", "user_id": user.user_id, "tenant_id": user.tenant_id, **out}
+    produced = out.get("outputs_produced") or {}
+    return {
+        "status": "ok",
+        "user_id": user.user_id,
+        "tenant_id": user.tenant_id,
+        **out,
+        **produced,
+    }

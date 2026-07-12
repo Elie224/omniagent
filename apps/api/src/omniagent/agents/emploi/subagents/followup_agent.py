@@ -1,13 +1,31 @@
-"""Agent Followup : relance automatique des candidatures envoyees.
+"""Agent Followup : noeud DAG.
 
-Strategies :
-- genere un email de relance J+5 / J+10 / J+15 apres envoi
-- choisit le ton selon le contexte (formel / decontracte / direct)
-- propose un sujet et un corps courts
-- signale les candidatures sans reponse depuis > 21 jours
+Entree :
+  input_data = {
+    "step": {...},
+    "context": {...},
+    "previous": {"interview_prep": ..., "salary": ...},
+    "user_id": str,
+    "applications": list[dict],
+    "profile": dict,
+    "tone": str,
+    "threshold_days": int,
+  }
 
-Best-effort : generation par templates + heuristique. Integration future avec
-un LLM ou un service d envoi (SendGrid) pour declenchement automatique.
+Sortie :
+  {
+    "agent": "agent_followup",
+    "user_id": str,
+    "node_id": "followup",
+    "status": "ok",
+    "inputs_consumed": ["applications", "previous.interview_prep.match_score", "previous.salary.offer_vs_market"],
+    "outputs_produced": {
+      "plan": [{application_id, action, days_since_sent, ...}, ...],
+      "next_action_date": str (ISO),
+      "kpis": {total_apps, needs_relance, stale, urgent},
+      "strategy_summary": str,
+    },
+  }
 """
 from __future__ import annotations
 
@@ -45,9 +63,16 @@ BODIES_BY_TONE: dict[str, list[str]] = {
     ],
 }
 
+# Strategie : on choisit le ton selon l'urgence
+TONE_BY_URGENCY = {
+    "urgent": "direct",        # > 21 jours, on est direct
+    "high": "formel",          # 14-21 jours
+    "medium": "formel",        # 7-14 jours
+    "low": "decontracte",      # 5-7 jours, on est leger
+}
+
 
 def _pick(tone: str, role: str, company: str, name: str, sent_date: str) -> dict:
-    """Selectionne un (subject, body) selon le ton."""
     import random
     subjects = SUBJECTS_BY_TONE.get(tone, SUBJECTS_BY_TONE["formel"])
     bodies = BODIES_BY_TONE.get(tone, BODIES_BY_TONE["formel"])
@@ -57,7 +82,6 @@ def _pick(tone: str, role: str, company: str, name: str, sent_date: str) -> dict
 
 
 def _days_since(sent_at: str) -> int:
-    """Retourne le nombre de jours depuis sent_at (ISO 8601)."""
     if not sent_at:
         return 0
     try:
@@ -73,24 +97,44 @@ def _days_since(sent_at: str) -> int:
         return 0
 
 
-async def run(input_data: dict, user_id: str) -> dict:
-    """Genere des relances pour une liste de candidatures.
+def _urgency_level(days: int) -> str:
+    if days >= 21: return "urgent"
+    if days >= 14: return "high"
+    if days >= 7:  return "medium"
+    return "low"
 
-    input_data :
-        - applications: list[dict]   -> chaque dict doit contenir
-            company, position, sent_at (ISO), contact_name
-        - profile: dict             -> full_name
-        - tone: str                 -> formel | decontracte | direct (default formel)
-        - threshold_days: int       -> declenche relance si J > threshold (default 5)
-    """
+
+async def run(input_data: dict, user_id: str) -> dict:
+    """Noeud DAG : plan de relance orchestre (cross-noeuds)."""
     profile = input_data.get("profile") or {}
     name = profile.get("full_name") or user_id
-    tone = input_data.get("tone") or "formel"
+    default_tone = input_data.get("tone") or "formel"
     threshold = int(input_data.get("threshold_days") or 5)
     applications = input_data.get("applications") or []
+    previous = input_data.get("previous") or {}
 
-    relances: list[dict] = []
+    # Cross-node inputs : on recupere le contexte des noeuds precedents
+    interview_out = previous.get("interview_prep")
+    if isinstance(interview_out, dict):
+        interview_data = interview_out.get("outputs_produced") or interview_out
+        match_score = interview_data.get("match_score")
+    else:
+        match_score = None
+
+    salary_out = previous.get("salary")
+    offer_vs_market = None
+    leverage = None
+    if isinstance(salary_out, dict):
+        salary_data = salary_out.get("outputs_produced") or salary_out
+        offer_vs_market = salary_data.get("offer_vs_market")
+        leverage = salary_data.get("negotiation_leverage")
+
+    plan: list[dict] = []
     stale: list[dict] = []
+    needs_relance_count = 0
+    urgent_count = 0
+
+    today = datetime.now(timezone.utc).date()
 
     for app in applications:
         sent_at = app.get("sent_at") or ""
@@ -99,15 +143,32 @@ async def run(input_data: dict, user_id: str) -> dict:
         role = app.get("position") or app.get("contract") or "poste"
         contact = app.get("contact_name") or "Madame, Monsieur"
 
+        urgency = _urgency_level(days)
+
         if days >= threshold:
+            needs_relance_count += 1
+            if urgency in ("urgent", "high"):
+                urgent_count += 1
+            # Choix du ton : si on a un match_score haut ou une offre sous le marche,
+            # on garde le ton formel (on est confiant). Sinon adaptatif.
+            if match_score is not None and match_score >= 0.7:
+                tone = "formel"
+            elif offer_vs_market == "below_market":
+                tone = "direct"  # on a des arguments, on est cash
+            else:
+                tone = TONE_BY_URGENCY[urgency]
             msg = _pick(tone, role, company, name, sent_at[:10] if sent_at else "recemment")
-            relances.append({
+            next_date = today + timedelta(days=3 if urgency == "urgent" else 5)
+            plan.append({
                 "application_id": app.get("id"),
                 "company": company,
                 "position": role,
                 "days_since_sent": days,
+                "urgency": urgency,
+                "tone_used": tone,
                 "to": contact,
-                "urgency": "high" if days >= 21 else ("medium" if days >= 14 else "low"),
+                "next_action_date": next_date.isoformat(),
+                "action": "relance_email",
                 **msg,
             })
         if days >= 21:
@@ -118,15 +179,46 @@ async def run(input_data: dict, user_id: str) -> dict:
                 "suggestion": "Considerer abandon ou derniere relance directe.",
             })
 
+    # Strategie globale : on prend en compte le contexte
+    strategy_parts = [f"{len(applications)} candidature(s) suivies."]
+    if match_score is not None:
+        strategy_parts.append(f"Match score moyen avec les offres : {match_score:.2f}.")
+    if offer_vs_market == "below_market":
+        strategy_parts.append("Les offres sont sous le marche : ton direct recommande.")
+    elif offer_vs_market == "above_market":
+        strategy_parts.append("Les offres sont au-dessus du marche : flexibilite sur le timing.")
+    if leverage is not None and leverage >= 0.7:
+        strategy_parts.append("Levier de negociation eleve : vous pouvez vous permettre d etre ferme.")
+    strategy = " ".join(strategy_parts)
+
+    # Date de la prochaine action globale = la plus proche du plan
+    next_action_date = None
+    if plan:
+        next_action_date = min(p["next_action_date"] for p in plan)
+
     return {
         "agent": "agent_followup",
         "user_id": user_id,
-        "tone": tone,
-        "threshold_days": threshold,
-        "relances_generated": len(relances),
-        "stale_count": len(stale),
-        "relances": relances,
-        "stale_applications": stale,
+        "node_id": "followup",
         "status": "ok",
+        "inputs_consumed": ["applications", "previous.interview_prep", "previous.salary"],
+        "outputs_produced": {
+            "plan": plan,
+            "next_action_date": next_action_date,
+            "kpis": {
+                "total_apps": len(applications),
+                "needs_relance": needs_relance_count,
+                "stale": len(stale),
+                "urgent": urgent_count,
+            },
+            "strategy_summary": strategy,
+        },
+        # Champs top-level (compat smoke tests)
+        "tone": default_tone,
+        "threshold_days": threshold,
+        "relances_generated": len(plan),
+        "stale_count": len(stale),
+        "relances": plan,
+        "stale_applications": stale,
         "caveat": "Generation automatique. Verification humaine recommandee avant envoi.",
     }
