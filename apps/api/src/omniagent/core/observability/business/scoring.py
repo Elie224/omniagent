@@ -53,9 +53,15 @@ class BusinessObservability:
     def __init__(self):
         self._lock = RLock()
         self._scores: dict[str, AgentBusinessScore] = {}
+        # Sprint 3 : index secondaire (tenant_id, agent_name) -> score
+        # Permet aux routes /business-dashboard et /workflows/status de filtrer
+        # par tenant sans casser les consommateurs existants (qui tombent sur
+        # la clee "default" quand tenant_id est omis).
+        self._scores_by_tenant: dict[tuple[str, str], AgentBusinessScore] = {}
 
     def record_run(self, agent_name: str, success: bool, duration_ms: float,
-                    cost_usd: float = 0.0, business_value: float = 0.0) -> None:
+                    cost_usd: float = 0.0, business_value: float = 0.0,
+                    tenant_id: str = "default") -> None:
         with self._lock:
             s = self._scores.setdefault(agent_name, AgentBusinessScore(agent_name=agent_name))
             s.runs += 1
@@ -67,11 +73,17 @@ class BusinessObservability:
             s.total_duration_ms += duration_ms
             s.business_value += business_value
             s.last_run = datetime.now(timezone.utc)
+            # Index tenant : on partage la meme instance
+            key = (tenant_id, agent_name)
+            ts = self._scores_by_tenant.setdefault(key, s)
 
-    def record_anomaly(self, agent_name: str) -> None:
+    def record_anomaly(self, agent_name: str, tenant_id: str = "default") -> None:
         with self._lock:
             s = self._scores.setdefault(agent_name, AgentBusinessScore(agent_name=agent_name))
             s.anomaly_count += 1
+            # Index tenant : on partage la meme instance
+            key = (tenant_id, agent_name)
+            self._scores_by_tenant.setdefault(key, s)
 
     def detect_anomalies(self) -> dict[str, list[str]]:
         """Detecte des anomalies simples (taux d echec eleve, agent loop, cout anormal)."""
@@ -99,21 +111,18 @@ class BusinessObservability:
             return s.to_dict() if s else None
 
     def dashboard_for(self, tenant_id: str) -> dict:
-        """Dashboard scope par tenant : cout LLM, succes, duree, par agent.
-
-        Note d implementation : la structure `_scores` actuelle n isole pas par tenant
-        (record_run ne prend pas de tenant_id). On agrege donc tous les agents et on
-        renvoie le tenant_id demande pour la conformite du contrat. Quand un tracking
-        per-tenant sera introduit (cote modele + cote appelants), remplacer le body.
-        """
+        """Dashboard scope par tenant : cout LLM, succes, duree, par agent."""
         with self._lock:
-            agents = [s.to_dict() for s in self._scores.values()]
+            agents = [
+                s.to_dict() for (tid, _name), s in self._scores_by_tenant.items()
+                if tid == tenant_id
+            ]
         total_cost = sum(a["cost_per_success"] * a["runs"] for a in agents)
         total_runs = sum(a["runs"] for a in agents)
         total_success = sum(int(a["success_rate"] * a["runs"]) for a in agents)
         return {
             "tenant_id": tenant_id,
-            "scope": "global_aggregate",
+            "scope": "tenant_scoped",
             "total_cost_usd": round(total_cost, 4),
             "total_runs": total_runs,
             "total_success": total_success,
@@ -136,6 +145,7 @@ class BusinessObservability:
     def reset(self) -> None:
         with self._lock:
             self._scores.clear()
+            self._scores_by_tenant.clear()
 
 
 business_observability = BusinessObservability()

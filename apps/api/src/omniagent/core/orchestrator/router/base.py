@@ -27,6 +27,7 @@ class Intent(str, Enum):
     maintenant SEARCH_JOB_AND_APPLY si possible, sinon UNKNOWN.
     """
     SEARCH_JOB_AND_APPLY = "search_job_and_apply"
+    JOB_WORKFLOW_RUN = "job_workflow_run"
     UNKNOWN = "unknown"
 
 
@@ -38,6 +39,12 @@ KEYWORD_MAP: dict[Intent, list[str]] = {
         "linkedin", "indeed", "hellowork", "cv", "lettre",
         "poste", "recrute", "recruteur", "apec", "adzuna",
         "wttj", "france travail", "the muse",
+    ],
+    Intent.JOB_WORKFLOW_RUN: [
+        # Workflow structure en DAG (job_discovery -> filter -> enrich -> match -> cv -> template -> apply)
+        # Declenche par mots-cles explicites pour eviter de tout router vers ce workflow long
+        "workflow", "pipeline", "processus complet", "recherche complete",
+        "postuler", "candidater", "envoi cv",
     ],
 }
 

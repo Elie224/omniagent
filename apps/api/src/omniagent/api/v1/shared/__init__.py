@@ -87,3 +87,41 @@ async def events_query(
         "count": len(events),
         "events": [e.to_dict() for e in events],
     }
+
+
+
+# Sprint 3 : tableau de bord workflow par tenant.
+# Regroupe les compteurs enregistres par orchestrator_workflow via
+# business_observability.record_run(agent_name="workflow.<step>", ...).
+@router.get("/workflows/status")
+async def workflows_status(user: CurrentUser = Depends(get_current_user)):
+    from collections import defaultdict
+    tenant_id = user.tenant_id
+    by_wf = defaultdict(lambda: {"runs": 0, "successes": 0, "failures": 0, "duration_ms": 0.0})
+    scores = getattr(business_observability, "_scores_by_tenant", None) or {}
+    for (tid, agent_name), s in scores.items():
+        if tid != tenant_id:
+            continue
+        if not agent_name.startswith("workflow."):
+            continue
+        wf = agent_name[len("workflow."):]
+        b = by_wf[wf]
+        # On lit directement les compteurs sur l instance partagee,
+        # pas via to_dict() qui expose des champs derives.
+        b["runs"]      += int(getattr(s, "runs", 0))
+        b["successes"] += int(getattr(s, "successes", 0))
+        b["failures"]  += int(getattr(s, "failures", 0))
+        b["duration_ms"] += float(getattr(s, "total_duration_ms", 0.0))
+    workflows = []
+    for wf, agg in by_wf.items():
+        runs = agg["runs"] or 0
+        workflows.append({
+            "workflow": wf,
+            "runs": runs,
+            "successes": agg["successes"],
+            "failures": agg["failures"],
+            "success_rate": round(agg["successes"] / runs, 3) if runs else 0.0,
+            "avg_duration_ms": round(agg["duration_ms"] / runs, 1) if runs else 0.0,
+        })
+    workflows.sort(key=lambda x: x["workflow"])
+    return {"tenant_id": tenant_id, "count": len(workflows), "workflows": workflows}
