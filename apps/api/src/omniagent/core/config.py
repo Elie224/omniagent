@@ -1,6 +1,6 @@
 """Configuration centralisee."""
 from functools import lru_cache
-from pydantic import field_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -71,24 +71,17 @@ class Settings(BaseSettings):
     # Liste des origines autorisees en CORS. Configurable via
     # `OMNIAGENT_CORS_ORIGINS` (liste separee par virgules, ex:
     # "http://localhost:13000,http://127.0.0.1:8090").
-    # Defaut : les frontends classiques (3000 dev Next, 13000 Docker publish,
-    # 3006 fallback local, 8090 backend local).
+    # Defaut : frontend local principal uniquement.
     cors_origins: list[str] = [
         "http://localhost:3000",
-        "http://localhost:3006",
-        "http://localhost:13000",
         "http://127.0.0.1:3000",
-        "http://127.0.0.1:3006",
-        "http://127.0.0.1:13000",
-        "http://127.0.0.1:8090",
-        "http://127.0.0.1:18000",
     ]
 
     # Auth
     access_token_ttl_s: int = 3600
     refresh_token_ttl_s: int = 7 * 24 * 3600  # 7 jours
-    # En dev, on accepte X-User/X-Role pour ne pas casser les tests existants
-    allow_legacy_headers: bool = True
+    # En dev, on peut accepter X-User/X-Role uniquement si active explicitement.
+    allow_legacy_headers: bool = False
 
     # JWT
     jwt_secret: str = ""          # override possible via JWT_SECRET (defaut = secret_key)
@@ -130,6 +123,16 @@ class Settings(BaseSettings):
                     pass
             return [s.strip() for s in v.split(",") if s.strip()]
         return v
+
+    @model_validator(mode="after")
+    def _validate_production_security(self):
+        if self.env == "production":
+            if self.secret_key == "change-me-in-prod":
+                raise ValueError("SECRET_KEY invalide en production (valeur par defaut interdite)")
+            local_hosts = ("localhost", "127.0.0.1")
+            if any(any(host in origin for host in local_hosts) for origin in self.cors_origins):
+                raise ValueError("CORS_ORIGINS invalide en production: localhost/127.0.0.1 interdits")
+        return self
 
     # Limites LLM
     monthly_llm_quota_usd: float = 5.0

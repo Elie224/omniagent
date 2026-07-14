@@ -43,6 +43,22 @@ def validate_upload(filename: str | None, content_type: str | None,
         raise ValueError(f"fichier trop gros ({size_bytes} > {MAX_SIZE_BYTES})")
 
 
+def validate_pdf_content(data: bytes) -> None:
+    """Validation defensive du contenu PDF.
+
+    - signature PDF attendue
+    - rejet des marqueurs JS/OpenAction les plus courants
+    """
+    if not data.startswith(b"%PDF-"):
+        raise ValueError("contenu invalide: signature PDF manquante")
+
+    # Analyse binaire simple et rapide pour bloquer les payloads actifs frequents.
+    probe = data[:2_000_000].lower()
+    blocked_markers = [b"/openaction", b"/javascript", b"/js", b"/aa"]
+    if any(m in probe for m in blocked_markers):
+        raise ValueError("PDF actif detecte (OpenAction/JavaScript interdit)")
+
+
 def extract_pdf_text(data: bytes) -> str:
     """Best-effort extraction texte d un PDF. Renvoie "" si rien d utilisable.
 
@@ -84,6 +100,7 @@ async def upload_cv(filename: str, content_type: str | None,
                      data: bytes, user_id: str, tenant_id: str) -> dict:
     """Valide, stocke et persiste les metadonnees du CV. Renvoie le dict CV."""
     validate_upload(filename, content_type, len(data))
+    validate_pdf_content(data)
     storage = connector_manager.get("local_storage")
     if storage is None:
         raise RuntimeError("local_storage connector indisponible")

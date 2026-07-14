@@ -19,6 +19,8 @@ def fresh_app(monkeypatch):
     """App minimale qui depend de get_current_user, avec un settings isole."""
     # Forcer env=production pour ce test
     monkeypatch.setenv("ENV", "production")
+    monkeypatch.setenv("SECRET_KEY", "unit-test-secret-key")
+    monkeypatch.setenv("CORS_ORIGINS", '["https://app.example.test"]')
     # Recharger le module settings pour prendre en compte la nouvelle env
     import omniagent.core.config as cfg
     importlib.reload(cfg)
@@ -60,6 +62,7 @@ def test_prod_rejects_no_header(fresh_app):
 def test_dev_accepts_legacy_x_user():
     """En dev, X-User reste un mode d auth valide (ne casse pas les tests E2E)."""
     os.environ["ENV"] = "development"
+    os.environ["ALLOW_LEGACY_HEADERS"] = "true"
     import omniagent.core.config as cfg
     importlib.reload(cfg)
     import omniagent.auth.dependencies as deps

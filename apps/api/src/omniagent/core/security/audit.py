@@ -5,6 +5,7 @@ Stocke en base (table `audit_log`) via SQLAlchemy. Le modele est declare dans
 """
 from __future__ import annotations
 import json
+from uuid import uuid4
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Optional
@@ -82,6 +83,7 @@ class AuditLog:
         try:
             async with self._db() as s:
                 s.add(AuditLogRow(
+                    log_id=uuid4().hex,
                     tenant_id=tenant_id, user_id=user_id,
                     action=action.value, payload=payload or {},
                     ip=ip,
@@ -93,6 +95,7 @@ class AuditLog:
     async def _ainsert(self, user_id, action, payload, tenant_id, ip):
         async with self._db() as s:
             s.add(AuditLogRow(
+                log_id=uuid4().hex,
                 tenant_id=tenant_id, user_id=user_id,
                 action=action.value, payload=payload or {},
                 ip=ip,

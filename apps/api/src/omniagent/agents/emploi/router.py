@@ -18,6 +18,7 @@ from collections import Counter
 
 from omniagent.auth.dependencies import CurrentUser, get_current_user, require_module_access
 from omniagent.core.config import settings
+from omniagent.core.security.audit import AuditAction, AuditLog
 from omniagent.agents.emploi.profile import (
     ProfileValidationError,
     candidate_to_profile_payload,
@@ -53,9 +54,8 @@ class SearchCriteria(BaseModel):
     location: str = "France"
     contract: Literal["stage", "alternance", "emploi", "all"] = "all"
     include_france_travail: bool = True
-    include_linkedin: bool = True
-    include_indeed: bool = True
-    include_hellowork: bool = True
+    include_adzuna: bool = True
+    include_themuse: bool = True
     max_results: int = Field(default=20, ge=1, le=100)
 
 
@@ -140,6 +140,27 @@ def _get_user_memory(request: Request):
     return stack.user
 
 
+def _client_ip(request: Request) -> str | None:
+    fwd = request.headers.get("x-forwarded-for")
+    if fwd:
+        return fwd.split(",")[0].strip()
+    if request.client:
+        return request.client.host
+    return None
+
+
+async def _audit(request: Request, user: CurrentUser, action: AuditAction, payload: dict) -> None:
+    db_factory = getattr(request.app.state, "db_session_factory", None)
+    logger = AuditLog(db_session=db_factory)
+    await logger.alog(
+        user_id=user.user_id,
+        tenant_id=user.tenant_id,
+        action=action,
+        payload=payload,
+        ip=_client_ip(request),
+    )
+
+
 async def _aget(user_mem, key: str, user_id: str, tenant_id: str):
     """Lecture unifiee : supporte UserMemory (async) et InMemoryUserMemory (sync).
     Best-effort : toute erreur (DB down, etc.) est capturee et retournee comme
@@ -193,12 +214,10 @@ async def search_offers(
     sources: list[str] = []
     if criteria.include_france_travail:
         sources.append("france_travail")
-    if criteria.include_linkedin:
-        sources.append("linkedin")
-    if criteria.include_indeed:
-        sources.append("indeed")
-    if criteria.include_hellowork:
-        sources.append("hellowork")
+    if criteria.include_adzuna:
+        sources.append("adzuna")
+    if criteria.include_themuse:
+        sources.append("themuse")
     if not sources:
         raise HTTPException(status_code=400, detail="aucune source activee")
 
@@ -320,6 +339,21 @@ async def profile_summary(request: Request,
         "profile": candidate_to_profile_payload(cand, profile),
         "orchestrator_context": profile_to_orchestrator_context(profile),
     }
+
+
+@router.get("/audit/history")
+async def audit_history(request: Request,
+                        limit: int = 100,
+                        user: CurrentUser = Depends(get_current_user)):
+    """Historique d audit des actions sensibles pour le tenant courant."""
+    db_factory = getattr(request.app.state, "db_session_factory", None)
+    logger = AuditLog(db_session=db_factory)
+    rows = await logger.history(
+        tenant_id=user.tenant_id,
+        user_id=user.user_id,
+        limit=min(max(limit, 1), 500),
+    )
+    return {"status": "ok", "count": len(rows), "items": rows}
 
 
 # ---------- Suivi des candidatures (Vague B) ----------
@@ -634,12 +668,26 @@ async def followup_generate(req: FollowupRequest,
 
 @router.post("/contact/enrich", dependencies=[Depends(require_module_access("emploi", "agent_contact_enrichment"))])
 async def contact_enrich(req: ContactEnrichRequest,
+                         request: Request,
                          user: CurrentUser = Depends(get_current_user)):
     """Trouve les contacts publics (email/telephone) de l entreprise de l offre."""
     if not req.user_confirmation:
+        await _audit(request, user, AuditAction.DATA_ACCESS, {
+            "agent": "agent_contact_enrichment",
+            "status": "rejected",
+            "reason": "missing_user_confirmation",
+            "company": req.company,
+        })
         raise HTTPException(status_code=422, detail="Confirmation utilisateur explicite requise pour contact_enrich")
     allowed_basis = {"legitimate_interest", "contractual_necessity", "consent"}
     if req.legal_basis.strip().lower() not in allowed_basis:
+        await _audit(request, user, AuditAction.DATA_ACCESS, {
+            "agent": "agent_contact_enrichment",
+            "status": "rejected",
+            "reason": "invalid_legal_basis",
+            "company": req.company,
+            "legal_basis": req.legal_basis,
+        })
         raise HTTPException(status_code=422, detail="legal_basis invalide: utiliser legitimate_interest|contractual_necessity|consent")
     from omniagent.agents.emploi.subagents.contact_enrichment_agent import run as run_agent
     out = await run_agent(
@@ -652,6 +700,14 @@ async def contact_enrich(req: ContactEnrichRequest,
         user_id=user.user_id,
     )
     produced = out.get("outputs_produced") or {}
+    await _audit(request, user, AuditAction.DATA_ACCESS, {
+        "agent": "agent_contact_enrichment",
+        "status": out.get("status", "ok"),
+        "company": produced.get("company") or req.company,
+        "legal_basis": req.legal_basis,
+        "emails_found": len(produced.get("emails") or []),
+        "phones_found": len(produced.get("phones") or []),
+    })
     return {
         "status": "ok",
         "user_id": user.user_id,
@@ -721,6 +777,14 @@ async def application_send(req: ApplicationSendRequest,
             and str(a.get("status") or "") in ("sent", "viewed", "interview", "accepted")
         ), None)
         if duplicate:
+            await _audit(request, user, AuditAction.AGENT_RUN, {
+                "agent": "agent_application_sender",
+                "status": "duplicate_prevented",
+                "company": req.offer.get("company"),
+                "position": req.offer.get("title"),
+                "recipient": req.recruiter_email,
+                "duplicate_application_id": duplicate.get("application_id"),
+            })
             return {
                 "status": "ok",
                 "user_id": user.user_id,
@@ -744,6 +808,15 @@ async def application_send(req: ApplicationSendRequest,
         user_id=user.user_id,
     )
     produced = out.get("outputs_produced") or {}
+    await _audit(request, user, AuditAction.AGENT_RUN, {
+        "agent": "agent_application_sender",
+        "status": out.get("status"),
+        "company": req.offer.get("company"),
+        "position": req.offer.get("title"),
+        "recipient": req.recruiter_email,
+        "sent": bool(produced.get("sent")),
+        "mode": produced.get("mode"),
+    })
 
     # Tracking mini-CRM: persister l action d envoi ou le brouillon.
     if req.offer:

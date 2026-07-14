@@ -20,6 +20,9 @@ build/
 .env
 .env.local
 .env.*.local
+*.env
+**/.env
+**/.env.*
 
 # IDE
 .vscode/
@@ -46,3 +49,11 @@ _next.log
 test_auth_prod.py
 test_results.txt
 _p_prefix.py
+
+# Exports d identifiants locaux (jamais versionner)
+identifiants_OmniAgent*.json
+
+# Artefacts temporaires supplementaires
+.pytest_tmp/
+**/.pytest_tmp/
+*.log

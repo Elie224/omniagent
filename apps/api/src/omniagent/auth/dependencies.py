@@ -14,6 +14,7 @@ Chaque requete authentifiee fournit un `CurrentUser` avec :
 from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional
+import logging
 
 from fastapi import Depends, Header, HTTPException, Request, status
 
@@ -23,6 +24,9 @@ from omniagent.auth.service import (
 from omniagent.auth import repository as auth_repo
 from omniagent.core.config import settings
 from omniagent.core.security.rbac import Role, has_permission
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -119,6 +123,7 @@ async def get_current_user(
 
     # 3) Fallback dev : si pas de header et pas en prod -> demo
     if settings.env != "production":
+        logger.warning("Auth fallback demo active (env=%s, request_path=%s)", settings.env, request.url.path)
         return CurrentUser(
             user_id="demo", role=Role.ADMIN, tenant_id="default",
             email="demo@omniagent.local", is_legacy=True, is_authenticated=True,

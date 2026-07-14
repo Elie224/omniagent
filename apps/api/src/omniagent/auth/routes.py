@@ -93,7 +93,7 @@ router = APIRouter()
 
 # --- Schemas ---
 class SignupRequest(BaseModel):
-    email: str
+    email: str = Field(min_length=3, max_length=254, pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
     password: str = Field(min_length=8, max_length=128)
     display_name: str = ""
     org_name: str = Field(min_length=1, max_length=255)
