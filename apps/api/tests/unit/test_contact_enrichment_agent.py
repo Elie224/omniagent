@@ -1,6 +1,6 @@
 import pytest
 
-from omniagent.agents.emploi.subagents.contact_enrichment_agent import run
+from omniagent.agents.emploi.subagents.contact_enrichment_agent import run, _is_safe_public_url
 
 
 @pytest.mark.asyncio
@@ -29,3 +29,17 @@ async def test_contact_enrichment_no_company_returns_no_company_status():
     produced = out["outputs_produced"]
     assert produced["emails"] == []
     assert produced["phones"] == []
+
+
+def test_contact_enrichment_rejects_localhost_url():
+    assert _is_safe_public_url("https://localhost/admin") is False
+
+
+def test_contact_enrichment_accepts_public_https_with_public_dns(monkeypatch):
+    from omniagent.agents.emploi.subagents import contact_enrichment_agent as mod
+
+    def _fake_getaddrinfo(host, port, proto=None):
+        return [(None, None, None, None, ("93.184.216.34", port))]
+
+    monkeypatch.setattr(mod.socket, "getaddrinfo", _fake_getaddrinfo)
+    assert _is_safe_public_url("https://example.com/jobs") is True

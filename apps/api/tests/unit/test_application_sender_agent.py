@@ -45,7 +45,7 @@ async def test_application_sender_sends_with_smtp(monkeypatch):
             assert password == "pass"
 
         def send_message(self, msg):
-            assert msg["To"] == "rh@example.com"
+            assert msg["To"] == "rh@acme.com"
             self.sent = True
 
     monkeypatch.setattr(sender.smtplib, "SMTP", _SMTP)
@@ -53,8 +53,8 @@ async def test_application_sender_sends_with_smtp(monkeypatch):
 
     out = await sender.run(
         {
-            "offer": {"title": "Data Scientist", "company": "ACME"},
-            "recruiter_email": "rh@example.com",
+            "offer": {"title": "Data Scientist", "company": "ACME", "url": "https://acme.com/jobs/1"},
+            "recruiter_email": "rh@acme.com",
             "letter": {"subject": "Sujet", "body": "Bonjour"},
             "profile": {"full_name": "Alice"},
             "user_confirmed": True,
@@ -65,7 +65,7 @@ async def test_application_sender_sends_with_smtp(monkeypatch):
 
     assert out["status"] == "sent"
     assert out["outputs_produced"]["sent"] is True
-    assert out["outputs_produced"]["recipient"] == "rh@example.com"
+    assert out["outputs_produced"]["recipient"] == "rh@acme.com"
 
 
 @pytest.mark.asyncio
@@ -83,4 +83,21 @@ async def test_application_sender_requires_explicit_confirmation(monkeypatch):
         user_id="u1",
     )
     assert out["status"] == "confirmation_required"
+    assert out["outputs_produced"]["sent"] is False
+
+
+@pytest.mark.asyncio
+async def test_application_sender_blocks_unverified_recipient():
+    out = await sender.run(
+        {
+            "offer": {"title": "Data Scientist", "company": "ACME", "url": "https://acme.com/jobs/1"},
+            "recruiter_email": "rh@evil.com",
+            "letter": {"subject": "Sujet", "body": "Bonjour"},
+            "profile": {"full_name": "Alice"},
+            "user_confirmed": True,
+            "confirmation_phrase": "JE CONFIRME L ENVOI",
+        },
+        user_id="u1",
+    )
+    assert out["status"] == "recipient_unverified"
     assert out["outputs_produced"]["sent"] is False

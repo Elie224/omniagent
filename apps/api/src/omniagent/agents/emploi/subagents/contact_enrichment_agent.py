@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import os
 import re
+import socket
+import ipaddress
 from html import unescape
 from typing import Any
 from urllib.parse import urlparse
@@ -85,6 +87,49 @@ def _candidate_urls(offer_url: str, domain: str, max_pages: int) -> list[str]:
     return _unique(out)[:max_pages]
 
 
+def _is_public_ip(ip: str) -> bool:
+    try:
+        obj = ipaddress.ip_address(ip)
+        return bool(obj.is_global)
+    except Exception:
+        return False
+
+
+def _resolves_to_public_ips(host: str, scheme: str) -> bool:
+    port = 443 if scheme == "https" else 80
+    try:
+        infos = socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP)
+    except Exception:
+        return False
+    ips: set[str] = set()
+    for info in infos:
+        sockaddr = info[4]
+        if not sockaddr:
+            continue
+        ip = str(sockaddr[0])
+        ips.add(ip)
+    if not ips:
+        return False
+    return all(_is_public_ip(ip) for ip in ips)
+
+
+def _is_safe_public_url(url: str) -> bool:
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return False
+    scheme = (parsed.scheme or "").lower()
+    host = (parsed.hostname or "").strip().lower()
+    if scheme not in {"https"}:
+        return False
+    if not host or host in {"localhost", "127.0.0.1", "::1"}:
+        return False
+    # Hostname IP literal -> validation directe ; sinon resolution DNS.
+    if _is_public_ip(host):
+        return True
+    return _resolves_to_public_ips(host, scheme)
+
+
 async def _scan_public_pages(urls: list[str]) -> tuple[list[str], list[str], list[str]]:
     emails: list[str] = []
     phones: list[str] = []
@@ -93,8 +138,9 @@ async def _scan_public_pages(urls: list[str]) -> tuple[list[str], list[str], lis
         return emails, phones, scanned
 
     headers = {"User-Agent": "OmniAgent/1.0 (+contact-enrichment)"}
-    async with httpx.AsyncClient(timeout=8.0, follow_redirects=True, headers=headers) as client:
-        for url in urls:
+    safe_urls = [u for u in urls if _is_safe_public_url(u)]
+    async with httpx.AsyncClient(timeout=8.0, follow_redirects=False, headers=headers) as client:
+        for url in safe_urls:
             try:
                 r = await client.get(url)
                 if r.status_code >= 400:

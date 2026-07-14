@@ -5,6 +5,7 @@ Pilote le pipeline Emploi de bout en bout avec gestion des echecs partiels.
 from __future__ import annotations
 
 from typing import Any
+from omniagent.core.config import settings
 
 from omniagent.agents.emploi.workflow import JobDiscoveryAgent
 from omniagent.agents.emploi.subagents.filtering_matching_agent import run as run_filtering_matching
@@ -34,6 +35,11 @@ async def run(input_data: dict, user_id: str) -> dict:
     run_contact = bool(options.get("run_contact_enrichment", True))
     run_letter = bool(options.get("run_letter_generation", False))
     run_send = bool(options.get("run_application_send", False))
+    batch_confirmed = bool(options.get("send_batch_confirmed", False))
+    batch_phrase = str(options.get("send_batch_confirmation_phrase") or "").strip()
+    selected_offer_keys = {
+        str(k).strip() for k in (options.get("send_selected_offers") or []) if str(k).strip()
+    }
 
     steps: list[dict[str, Any]] = []
     offers = list(input_data.get("offers") or [])
@@ -132,10 +138,25 @@ async def run(input_data: dict, user_id: str) -> dict:
     send_results: list[dict[str, Any]] = []
     if run_send and offers:
         async def _send_batch():
+            expected_phrase = str(settings.application_sender_confirmation_phrase or "JE CONFIRME L ENVOI").strip().upper()
+            if (not batch_confirmed) or (batch_phrase.upper() != expected_phrase):
+                for o in offers:
+                    key = str(o.get("offer_id") or o.get("id") or o.get("url") or o.get("title") or "")
+                    send_results.append({"offer": key, "status": "confirmation_required", "sent": False})
+                return {
+                    "sent": 0,
+                    "errors": 0,
+                    "results": send_results,
+                    "required_confirmation_phrase": expected_phrase,
+                }
+
             sent = 0
             errors = 0
             for o in offers:
                 key = str(o.get("offer_id") or o.get("id") or o.get("url") or o.get("title") or "")
+                if selected_offer_keys and key not in selected_offer_keys:
+                    send_results.append({"offer": key, "status": "not_selected", "sent": False})
+                    continue
                 contact = contact_by_offer.get(key) or {}
                 recruiter_email = contact.get("primary_email") or ((contact.get("emails") or [None])[0])
                 if not recruiter_email:
@@ -149,6 +170,10 @@ async def run(input_data: dict, user_id: str) -> dict:
                             "profile": profile,
                             "letter": letter,
                             "recruiter_email": recruiter_email,
+                            "company_domain": contact.get("company_domain") or o.get("company_domain") or "",
+                            "offer_url": o.get("url") or "",
+                            "user_confirmed": True,
+                            "confirmation_phrase": batch_phrase,
                         },
                         user_id=user_id,
                     )
