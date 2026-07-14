@@ -37,7 +37,7 @@ KEYWORD_MAP: dict[Intent, list[str]] = {
     Intent.SEARCH_JOB_AND_APPLY: [
         "offre", "emploi", "candidature", "alternance", "stage",
         "linkedin", "indeed", "hellowork", "cv", "lettre",
-        "poste", "recrute", "recruteur", "apec", "adzuna",
+            "poste", "recrute", "recruteur", "adzuna",
         "wttj", "france travail", "the muse",
     ],
     Intent.JOB_WORKFLOW_RUN: [

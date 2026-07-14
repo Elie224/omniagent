@@ -29,6 +29,7 @@ from typing import Any
 import httpx
 
 from omniagent.connectors.base.connector import Connector
+from omniagent.core.config import settings
 
 
 logger = logging.getLogger(__name__)
@@ -88,8 +89,8 @@ class FranceTravailConnector(Connector):
 
     def __init__(self, client_id: str = "", client_secret: str = "",
                  scope: str = "api_offresdemploiv2 o2dsoffre", timeout: float = 0):
-        self._client_id = client_id or os.getenv("FT_CLIENT_ID", "")
-        self._client_secret = client_secret or os.getenv("FT_CLIENT_SECRET", "")
+        self._client_id = client_id or settings.ft_client_id or os.getenv("FT_CLIENT_ID", "")
+        self._client_secret = client_secret or settings.ft_client_secret or os.getenv("FT_CLIENT_SECRET", "")
         raw_scope = scope or os.getenv("FT_SCOPE", "api_offresdemploiv2 o2dsoffre")
         self._scope = self._normalize_scope(raw_scope)
         self._timeout = timeout or float(os.getenv("FT_TIMEOUT", "15"))
@@ -420,7 +421,7 @@ def _mock_offers(query: str, location: str, contract: str | None,
                   max_results: int) -> list[dict]:
     """Dataset mock pour dev sans cle FT. Offres representatives.
 
-    Ce dataset couvre 6 plateformes simulees (france_travail, adzuna, wttj, apec,
+    Ce dataset couvre 5 plateformes simulees (france_travail, adzuna, wttj,
     linkedin, indeed, hellowork, themuse) pour permettre un dev/test complet
     sans aucune cle API. Les champs sont normalises comme la vraie API FT.
     """

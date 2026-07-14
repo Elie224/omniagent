@@ -4,6 +4,8 @@ Vague B : focus Emploi. Endpoints :
   - POST /search             : recherche d offres
   - POST /apply              : declenche la generation de lettre
   - GET  /health             : healthcheck module
+    - POST /cv/generate        : genere un CV (tex/pdf) via agent_cv
+    - GET  /cv/generated/download : telecharge le PDF genere par agent_cv
   - GET  /profile            : recupere le profil candidat du user
   - POST /profile            : cree / met a jour le profil candidat
   - DELETE /profile          : supprime le profil candidat
@@ -15,6 +17,7 @@ from typing import Literal
 from collections import Counter
 
 from omniagent.auth.dependencies import CurrentUser, get_current_user, require_module_access
+from omniagent.core.config import settings
 from omniagent.agents.emploi.profile import (
     ProfileValidationError,
     candidate_to_profile_payload,
@@ -117,6 +120,11 @@ class ApplicationPatch(BaseModel):
     status: str | None = None
     notes: str | None = None
     contact_name: str | None = None
+
+
+class CVGenerateRequest(BaseModel):
+    offer: dict = Field(default_factory=dict)
+    template: str = "moderne"
 
 
 # ---------- Helpers ----------
@@ -225,6 +233,17 @@ async def apply_to_offer(
     req: ApplyRequest,
     user: CurrentUser = Depends(require_module_access("emploi", "agent_lettre")),
 ):
+    """Compat legacy: genere une lettre via agent_lettre."""
+    from omniagent.agents.emploi.subagents.lettre_agent import run as run_lettre
+    lettre = await run_lettre({"contract": req.contract, "variables": req.variables},
+                                user_id=user.user_id)
+    return {"offer_id": req.offer_id, "lettre": lettre, "status": "draft"}
+
+
+@router.post("/lettre/generate", dependencies=[Depends(require_module_access("emploi", "agent_lettre"))])
+async def generate_lettre(req: ApplyRequest,
+                          user: CurrentUser = Depends(get_current_user)):
+    """Endpoint explicite pour agent_lettre (separe de tout envoi)."""
     from omniagent.agents.emploi.subagents.lettre_agent import run as run_lettre
     lettre = await run_lettre({"contract": req.contract, "variables": req.variables},
                                 user_id=user.user_id)
@@ -234,8 +253,8 @@ async def apply_to_offer(
 @router.get("/health")
 async def health():
     return {"module": "emploi", "status": "ok", "agents": [
-        "agent_emploi", "agent_linkedin", "agent_indeed",
-        "agent_hellowork", "agent_cv", "agent_lettre"
+        "agent_emploi", "agent_adzuna", "agent_france_travail",
+        "agent_themuse", "agent_cv", "agent_lettre"
     ]}
 
 
@@ -449,6 +468,45 @@ async def download_cv_endpoint(request: Request,
                          filename=meta.get("filename", "cv.pdf"))
 
 
+@router.post("/cv/generate")
+async def generate_cv_endpoint(request: Request,
+                                req: CVGenerateRequest,
+                                user: CurrentUser = Depends(get_current_user)):
+    """Genere un CV via agent_cv (LaTeX -> PDF si pdflatex est disponible)."""
+    from omniagent.agents.emploi.subagents.cv_agent import run as run_cv_agent
+
+    user_mem = _get_user_memory(request)
+    profile = await _aget(
+        user_mem,
+        "profile:candidate",
+        user_id=user.user_id,
+        tenant_id=user.tenant_id,
+    ) or {}
+    out = await run_cv_agent(
+        {"profile": profile, "offer": req.offer, "template": req.template},
+        user_id=user.user_id,
+    )
+    return {"status": "ok", **out}
+
+
+@router.get("/cv/generated/download")
+async def download_generated_cv_endpoint(user: CurrentUser = Depends(get_current_user)):
+    """Telecharge le PDF genere par l agent CV pour l utilisateur courant."""
+    from pathlib import Path
+    from fastapi import HTTPException
+    from fastapi.responses import FileResponse
+    from omniagent.agents.emploi.subagents.cv_agent import TEMPLATE_DIR
+
+    pdf_path = Path(TEMPLATE_DIR) / f"{user.user_id}_cv.pdf"
+    if not pdf_path.exists():
+        raise HTTPException(status_code=404, detail="CV PDF non genere")
+    return FileResponse(
+        path=str(pdf_path),
+        media_type="application/pdf",
+        filename=f"{user.user_id}_cv.pdf",
+    )
+
+
 # ---------- Sprint 3b : 3 nouveaux agents (interview, salary, followup) ----------
 
 class InterviewCoachRequest(BaseModel):
@@ -511,6 +569,48 @@ class FollowupRequest(BaseModel):
     threshold_days: int = 5
 
 
+class ContactEnrichRequest(BaseModel):
+    offer: dict = Field(default_factory=dict)
+    company: str = ""
+    company_domain: str = ""
+    max_pages: int = Field(default=5, ge=1, le=10)
+    user_confirmation: bool = False
+    legal_basis: str = ""
+
+
+class LettreAutoRequest(BaseModel):
+    offer: dict = Field(default_factory=dict)
+    profile: dict = Field(default_factory=dict)
+
+
+class ApplicationSendRequest(BaseModel):
+    offer: dict = Field(default_factory=dict)
+    recruiter_email: str = ""
+    letter: dict = Field(default_factory=dict)
+    profile: dict = Field(default_factory=dict)
+    confirm_phrase: str = ""
+    force_send: bool = False
+
+
+class FilteringMatchingRequest(BaseModel):
+    offers: list[dict] = Field(default_factory=list)
+    city: str = ""
+    radius: str = "city"
+    contract: Literal["stage", "alternance", "emploi", "all"] = "all"
+    recency_hours: int = Field(default=24, ge=0, le=24 * 30)
+    score_threshold: float = Field(default=0.45, ge=0.0, le=1.0)
+    max_results: int = Field(default=20, ge=1, le=100)
+    profile: dict = Field(default_factory=dict)
+
+
+class MissionControllerRequest(BaseModel):
+    mission: dict = Field(default_factory=dict)
+    criteria: dict = Field(default_factory=dict)
+    options: dict = Field(default_factory=dict)
+    offers: list[dict] = Field(default_factory=list)
+    profile: dict = Field(default_factory=dict)
+
+
 @router.post("/followup/generate", dependencies=[Depends(require_module_access("emploi", "agent_followup"))])
 async def followup_generate(req: FollowupRequest,
                              request: Request,
@@ -520,6 +620,228 @@ async def followup_generate(req: FollowupRequest,
     out = await run_agent(
         {"applications": req.applications, "profile": req.profile,
          "tone": req.tone, "threshold_days": req.threshold_days},
+        user_id=user.user_id,
+    )
+    produced = out.get("outputs_produced") or {}
+    return {
+        "status": "ok",
+        "user_id": user.user_id,
+        "tenant_id": user.tenant_id,
+        **out,
+        **produced,
+    }
+
+
+@router.post("/contact/enrich", dependencies=[Depends(require_module_access("emploi", "agent_contact_enrichment"))])
+async def contact_enrich(req: ContactEnrichRequest,
+                         user: CurrentUser = Depends(get_current_user)):
+    """Trouve les contacts publics (email/telephone) de l entreprise de l offre."""
+    if not req.user_confirmation:
+        raise HTTPException(status_code=422, detail="Confirmation utilisateur explicite requise pour contact_enrich")
+    allowed_basis = {"legitimate_interest", "contractual_necessity", "consent"}
+    if req.legal_basis.strip().lower() not in allowed_basis:
+        raise HTTPException(status_code=422, detail="legal_basis invalide: utiliser legitimate_interest|contractual_necessity|consent")
+    from omniagent.agents.emploi.subagents.contact_enrichment_agent import run as run_agent
+    out = await run_agent(
+        {
+            "offer": req.offer,
+            "company": req.company,
+            "company_domain": req.company_domain,
+            "max_pages": req.max_pages,
+        },
+        user_id=user.user_id,
+    )
+    produced = out.get("outputs_produced") or {}
+    return {
+        "status": "ok",
+        "user_id": user.user_id,
+        "tenant_id": user.tenant_id,
+        **out,
+        **produced,
+    }
+
+
+@router.post("/lettre/auto", dependencies=[Depends(require_module_access("emploi", "agent_lettre_requirement"))])
+async def lettre_auto(req: LettreAutoRequest,
+                      request: Request,
+                      user: CurrentUser = Depends(get_current_user)):
+    """Genere une lettre uniquement si l'offre la demande explicitement."""
+    from omniagent.agents.emploi.subagents.lettre_requirement_agent import run as run_agent
+
+    profile = req.profile
+    if not profile:
+        user_mem = _get_user_memory(request)
+        profile = await _aget(
+            user_mem,
+            "profile:candidate",
+            user_id=user.user_id,
+            tenant_id=user.tenant_id,
+        ) or {}
+
+    out = await run_agent({"offer": req.offer, "profile": profile}, user_id=user.user_id)
+    produced = out.get("outputs_produced") or {}
+    return {
+        "status": "ok",
+        "user_id": user.user_id,
+        "tenant_id": user.tenant_id,
+        **out,
+        **produced,
+    }
+
+
+@router.post("/application/send", dependencies=[Depends(require_module_access("emploi", "agent_application_sender"))])
+async def application_send(req: ApplicationSendRequest,
+                           request: Request,
+                           user: CurrentUser = Depends(get_current_user)):
+    """Envoie la candidature au recruteur (email + lettre + CV si disponible)."""
+    from omniagent.agents.emploi.subagents.application_sender_agent import run as run_agent
+
+    profile = req.profile
+    if not profile:
+        user_mem = _get_user_memory(request)
+        profile = await _aget(
+            user_mem,
+            "profile:candidate",
+            user_id=user.user_id,
+            tenant_id=user.tenant_id,
+        ) or {}
+
+    # Garde-fou doublon: evite un double envoi sur meme offre + destinataire.
+    user_mem = _get_user_memory(request)
+    if req.recruiter_email and not req.force_send:
+        existing = await list_applications(user_mem, user_id=user.user_id, tenant_id=user.tenant_id)
+        target_company = str(req.offer.get("company") or "").strip().lower()
+        target_position = str(req.offer.get("title") or "").strip().lower()
+        target_email = str(req.recruiter_email or "").strip().lower()
+        duplicate = next((
+            a for a in existing
+            if str(a.get("company") or "").strip().lower() == target_company
+            and str(a.get("position") or "").strip().lower() == target_position
+            and str(a.get("email") or "").strip().lower() == target_email
+            and str(a.get("status") or "") in ("sent", "viewed", "interview", "accepted")
+        ), None)
+        if duplicate:
+            return {
+                "status": "ok",
+                "user_id": user.user_id,
+                "tenant_id": user.tenant_id,
+                "agent": "agent_application_sender",
+                "sent": False,
+                "duplicate_prevented": True,
+                "duplicate_application_id": duplicate.get("application_id"),
+                "message": "Envoi bloque: candidature deja envoyee pour cette offre et ce contact.",
+            }
+
+    out = await run_agent(
+        {
+            "offer": req.offer,
+            "recruiter_email": req.recruiter_email,
+            "letter": req.letter,
+            "profile": profile,
+            "user_confirmed": req.confirm_phrase.strip().upper() == str(settings.application_sender_confirmation_phrase or "JE CONFIRME L ENVOI").strip().upper(),
+            "confirmation_phrase": req.confirm_phrase,
+        },
+        user_id=user.user_id,
+    )
+    produced = out.get("outputs_produced") or {}
+
+    # Tracking mini-CRM: persister l action d envoi ou le brouillon.
+    if req.offer:
+        try:
+            app_status = "sent" if produced.get("sent") else "draft"
+            await add_application(
+                user_mem,
+                {
+                    "company": req.offer.get("company") or "Entreprise",
+                    "position": req.offer.get("title") or "Poste",
+                    "location": req.offer.get("location") or "",
+                    "url": req.offer.get("url") or "",
+                    "source": req.offer.get("source") or "",
+                    "contract": req.offer.get("contract") or "",
+                    "status": app_status,
+                    "email": req.recruiter_email or "",
+                    "notes": f"application_sender_status={out.get('status')}",
+                },
+                user_id=user.user_id,
+                tenant_id=user.tenant_id,
+            )
+        except Exception:
+            pass
+
+    return {
+        "status": "ok",
+        "user_id": user.user_id,
+        "tenant_id": user.tenant_id,
+        **out,
+        **produced,
+    }
+
+
+@router.post("/offers/filter-match", dependencies=[Depends(require_module_access("emploi", "agent_filtering_matching"))])
+async def offers_filter_match(req: FilteringMatchingRequest,
+                              request: Request,
+                              user: CurrentUser = Depends(get_current_user)):
+    """Filtre les offres (ville/periode/contrat) et score la compatibilite profil."""
+    from omniagent.agents.emploi.subagents.filtering_matching_agent import run as run_agent
+
+    profile = req.profile
+    if not profile:
+        user_mem = _get_user_memory(request)
+        profile = await _aget(
+            user_mem,
+            "profile:candidate",
+            user_id=user.user_id,
+            tenant_id=user.tenant_id,
+        ) or {}
+
+    out = await run_agent(
+        {
+            "offers": req.offers,
+            "city": req.city,
+            "radius": req.radius,
+            "contract": req.contract,
+            "recency_hours": req.recency_hours,
+            "score_threshold": req.score_threshold,
+            "max_results": req.max_results,
+            "profile": profile,
+        },
+        user_id=user.user_id,
+    )
+    produced = out.get("outputs_produced") or {}
+    return {
+        "status": "ok",
+        "user_id": user.user_id,
+        "tenant_id": user.tenant_id,
+        **out,
+        **produced,
+    }
+
+
+@router.post("/mission/run", dependencies=[Depends(require_module_access("emploi", "agent_mission_controller"))])
+async def mission_run(req: MissionControllerRequest,
+                      request: Request,
+                      user: CurrentUser = Depends(get_current_user)):
+    """Pilote une mission Emploi complete avec gestion d echecs partiels."""
+    from omniagent.agents.emploi.subagents.mission_controller_agent import run as run_agent
+
+    profile = req.profile
+    if not profile:
+        user_mem = _get_user_memory(request)
+        profile = await _aget(
+            user_mem,
+            "profile:candidate",
+            user_id=user.user_id,
+            tenant_id=user.tenant_id,
+        ) or {}
+
+    out = await run_agent(
+        {
+            "mission": req.mission,
+            "criteria": req.criteria,
+            "options": req.options,
+            "offers": req.offers,
+            "profile": profile,
+        },
         user_id=user.user_id,
     )
     produced = out.get("outputs_produced") or {}

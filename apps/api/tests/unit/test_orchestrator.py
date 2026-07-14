@@ -31,6 +31,7 @@ def test_planner_builds_plan():
     p = TemplatePlanner()
     plan = p.build("search_job_and_apply", {})
     agents = [s.agent_name for s in plan.steps]
-    assert "agent_linkedin" in agents
+    assert "agent_adzuna" in agents
+    assert "agent_france_travail" in agents
     assert "agent_cv" in agents
     assert "agent_lettre" in agents

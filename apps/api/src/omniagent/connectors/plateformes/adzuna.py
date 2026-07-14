@@ -20,6 +20,7 @@ from typing import Any
 import httpx
 
 from omniagent.connectors.base.connector import Connector
+from omniagent.core.config import settings
 
 
 logger = logging.getLogger(__name__)
@@ -32,8 +33,8 @@ class AdzunaConnector(Connector):
 
     def __init__(self, app_id: str = "", api_key: str = "",
                  country: str = "fr", timeout: float = 15.0):
-        self._app_id = app_id or os.getenv("ADZUNA_APP_ID", "")
-        self._api_key = api_key or os.getenv("ADZUNA_API_KEY", "")
+        self._app_id = app_id or settings.adzuna_app_id or os.getenv("ADZUNA_APP_ID", "")
+        self._api_key = api_key or settings.adzuna_api_key or os.getenv("ADZUNA_API_KEY", "")
         self._country = country or os.getenv("ADZUNA_COUNTRY", "fr")
         self._timeout = timeout
 
@@ -72,11 +73,9 @@ class AdzunaConnector(Connector):
             "app_key": self._api_key,
             "results_per_page": min(max_results, 50),
             "what": query,
-            "what_or": query,
-            "what_and": "",
-            "what_phrase": "",
-            "what_not": "",
-            "content-type": "application/json",
+            # Keep query minimal: Adzuna can return 0 when combining optional
+            # filters too aggressively on some markets.
+            "sort_by": "date",
         }
         if location:
             params["where"] = location

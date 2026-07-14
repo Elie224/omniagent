@@ -6,9 +6,15 @@ import pytest
 async def test_coordinator_emploi_dispatches():
     from omniagent.agents.emploi.subagents.coordinator import run
     r = await run({"criteria": {"keywords": "data scientist"}}, "u1")
-    assert "agent_linkedin" in r["dispatched"]
-    assert "agent_indeed" in r["dispatched"]
-    assert "agent_hellowork" in r["dispatched"]
+    assert r["dispatched"] == ["agent_france_travail"]
+
+
+@pytest.mark.asyncio
+async def test_coordinator_emploi_dispatches_adzuna_when_selected():
+    from omniagent.agents.emploi.subagents.coordinator import run
+    r = await run({"criteria": {"keywords": "data scientist"}, "context": {"sources": ["adzuna", "france_travail"]}}, "u1")
+    assert "agent_adzuna" in r["dispatched"]
+    assert "agent_france_travail" in r["dispatched"]
 
 
 @pytest.mark.asyncio

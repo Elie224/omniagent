@@ -42,7 +42,7 @@ class JobWorkflowPlanner(Planner):
         # On prepare le template pour que le runner resolve les cles automatiquement.
         if agent_name == "job_discovery":
             return {
-                "sources": context.get("sources", ["linkedin", "indeed", "hellowork"]),
+                "sources": context.get("sources", ["france_travail"]),
                 "query": context.get("query", ""),
                 "location": context.get("location", ""),
                 "max_results": context.get("max_results", 20),

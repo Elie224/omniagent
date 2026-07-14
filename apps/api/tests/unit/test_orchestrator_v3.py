@@ -15,7 +15,8 @@ def test_template_planner_builds():
     p = TemplatePlanner()
     plan = p.build("search_job_and_apply", {})
     assert plan.name == "search_job_and_apply"
-    assert any(s.agent_name == "agent_linkedin" for s in plan.steps)
+    assert any(s.agent_name == "agent_adzuna" for s in plan.steps)
+    assert any(s.agent_name == "agent_france_travail" for s in plan.steps)
 
 
 def test_planner_registry_routes_to_first_match():

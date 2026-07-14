@@ -12,7 +12,6 @@ from omniagent.connectors.plateformes.hunter import HunterConnector
 from omniagent.connectors.plateformes.adzuna import AdzunaConnector
 from omniagent.connectors.plateformes.france_travail import FranceTravailConnector
 from omniagent.connectors.plateformes.wttj import WTTJConnector
-from omniagent.connectors.plateformes.apec import APECConnector
 from omniagent.connectors.plateformes.themuse import TheMuseConnector
 from omniagent.connectors.storage.local import LocalStorageConnector
 
@@ -37,10 +36,6 @@ def register_all() -> None:
                       lambda: WTTJConnector(),
                       requires_env=[],
                       description="Welcome to the Jungle (startups FR)"),
-        ConnectorSpec("apec", "plateformes",
-                      lambda: APECConnector(),
-                      requires_env=["apec_client_id", "apec_client_secret"],
-                      description="APEC (cadres FR) - API officielle"),
         ConnectorSpec("themuse", "plateformes",
                       lambda: TheMuseConnector(),
                       requires_env=[],

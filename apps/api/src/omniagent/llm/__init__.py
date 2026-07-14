@@ -148,7 +148,8 @@ _default_client: LLMClient | None = None
 def get_default_llm() -> LLMClient:
     """Retourne le LLM client par defaut (singleton).
 
-    Strategie : si une cle OpenAI est dispo, on retourne un wrapper ; sinon
+    Strategie : si une cle Anthropic est dispo, on retourne un wrapper stub ;
+    sinon si une cle OpenAI est dispo, on retourne un wrapper stub ; sinon
     un MockLLMClient deterministe. Permet de dev sans cle API tout en
     gardant l interface stable.
     """
@@ -156,7 +157,9 @@ def get_default_llm() -> LLMClient:
     if _default_client is not None:
         return _default_client
     from omniagent.core.config import settings
-    if settings.openai_api_key:
+    if settings.anthropic_api_key:
+        _default_client = MockLLMClient(name="anthropic-stub")
+    elif settings.openai_api_key:
         _default_client = MockLLMClient(name="openai-stub")
     else:
         _default_client = MockLLMClient(name="mock-llm")

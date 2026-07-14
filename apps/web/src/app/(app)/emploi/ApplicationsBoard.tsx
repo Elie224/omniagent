@@ -3,6 +3,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { Briefcase, Building2, MapPin, Mail, Phone, ExternalLink, Trash2, Save, Loader2, AlertTriangle, Plus, ChevronDown, CalendarDays, MessageSquare } from "lucide-react";
 import { API, devAuthHeaders } from "@/lib/api";
+import { toSafeExternalUrl } from "@/lib/urlSafety";
 
 export interface Application {
   application_id: string;
@@ -196,6 +197,7 @@ export function ApplicationsBoard(props: ApplicationsBoardProps) {
           {filtered.map((a) => {
             const meta = STATUS_LABELS[a.status] || STATUS_LABELS.sent;
             const isEditing = editingId === a.application_id;
+            const safeOfferUrl = toSafeExternalUrl(a.url);
             return (
               <article key={a.application_id} className="rounded-xl border border-slate-200 p-4 hover:shadow-sm transition">
                 <div className="flex items-start justify-between gap-3">
@@ -216,7 +218,11 @@ export function ApplicationsBoard(props: ApplicationsBoardProps) {
                   <span className="inline-flex items-center gap-1"><CalendarDays className="w-3 h-3" />Envoyee le {fmtDate(a.sent_at)}</span>
                   {a.email ? <a href={"mailto:" + a.email} className="inline-flex items-center gap-1 text-indigo-600 hover:text-indigo-700 truncate"><Mail className="w-3 h-3" />{a.email}</a> : null}
                   {a.phone ? <a href={"tel:" + a.phone} className="inline-flex items-center gap-1 text-indigo-600 hover:text-indigo-700"><Phone className="w-3 h-3" />{a.phone}</a> : null}
-                  {a.url ? <a href={a.url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-indigo-600 hover:text-indigo-700 truncate"><ExternalLink className="w-3 h-3" />Voir l 'offre</a> : null}
+                  {safeOfferUrl ? (
+                    <a href={safeOfferUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-indigo-600 hover:text-indigo-700 truncate"><ExternalLink className="w-3 h-3" />Voir l&apos;offre</a>
+                  ) : (
+                    <button type="button" disabled title="Lien de l'offre indisponible" className="inline-flex items-center gap-1 text-slate-400 cursor-not-allowed"><ExternalLink className="w-3 h-3" />Voir l&apos;offre</button>
+                  )}
                   {a.contact_name ? <span className="inline-flex items-center gap-1"><MessageSquare className="w-3 h-3" />{a.contact_name}</span> : null}
                   {a.source ? <span className="inline-flex items-center gap-1 text-slate-500">Source: {a.source}</span> : null}
                 </div>

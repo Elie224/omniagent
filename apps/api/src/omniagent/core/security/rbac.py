@@ -16,15 +16,16 @@ ROLE_PERMISSIONS: dict[Role, dict[str, list[str]]] = {
         "emploi":       ["*"],
     },
     Role.RECRUITER: {
-        "emploi":       ["agent_emploi", "agent_linkedin", "agent_indeed",
-                         "agent_hellowork", "agent_adzuna", "agent_france_travail",
-                         "agent_wttj", "agent_apec", "agent_themuse",
+        "emploi":       ["agent_emploi", "agent_adzuna", "agent_france_travail",
+                         "agent_themuse",
                          "agent_cv", "agent_lettre",
-                         "agent_interview_coach", "agent_salary_benchmark", "agent_followup"],
+                         "agent_interview_coach", "agent_salary_benchmark", "agent_followup",
+                         "agent_contact_enrichment", "agent_lettre_requirement", "agent_filtering_matching", "agent_mission_controller", "agent_application_sender"],
     },
     Role.USER: {
-        "emploi":       ["agent_emploi", "agent_linkedin", "agent_cv", "agent_lettre",
-                         "agent_interview_coach", "agent_salary_benchmark", "agent_followup"],
+        "emploi":       ["agent_emploi", "agent_cv", "agent_lettre",
+                         "agent_interview_coach", "agent_salary_benchmark", "agent_followup",
+                         "agent_contact_enrichment", "agent_lettre_requirement", "agent_filtering_matching", "agent_mission_controller", "agent_application_sender"],
     },
 }
 

@@ -1,8 +1,16 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Upload, FileText, Trash2, Loader2, AlertTriangle, Download, CheckCircle2 } from "lucide-react";
+import { Upload, FileText, Trash2, Loader2, Download } from "lucide-react";
 import { API, devAuthHeaders } from "@/lib/api";
+import {
+  notifyCvUploadInvalidFormat,
+  notifyCvUploadTooLarge,
+  notifyCvUploaded,
+  notifyCvUploadError,
+  notifyCvDeleted,
+  notifyCvDeleteError,
+} from "@/lib/cvToasts";
 
 interface CVMeta {
   filename: string;
@@ -31,10 +39,9 @@ export default function CVUpload() {
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
   const [deleting, setDeleting] = useState(false);
-  const [actionError, setActionError] = useState<string | null>(null);
-  const [success, setSuccess] = useState<string | null>(null);
   const [drag, setDrag] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const busy = uploading || deleting;
 
   useEffect(() => {
     let abort = false;
@@ -62,12 +69,13 @@ export default function CVUpload() {
   }, []);
 
   async function uploadFile(file: File) {
-    setActionError(null); setSuccess(null);
     if (!file.name.toLowerCase().endsWith(".pdf")) {
-      setActionError("Le fichier doit etre un PDF (extension .pdf)."); return;
+      notifyCvUploadInvalidFormat();
+      return;
     }
     if (file.size > 5 * 1024 * 1024) {
-      setActionError(`Fichier trop volumineux (${fmtSize(file.size)} > 5 MB).`); return;
+      notifyCvUploadTooLarge(fmtSize(file.size));
+      return;
     }
     setUploading(true);
     const fd = new FormData();
@@ -84,10 +92,9 @@ export default function CVUpload() {
       }
       const data = await r.json();
       setCv(data.cv);
-      setSuccess("CV televerse avec succes.");
-      setTimeout(() => setSuccess(null), 3000);
+      notifyCvUploaded();
     } catch (e: any) {
-      setActionError(e?.message || "Erreur lors du televersement");
+      notifyCvUploadError(e?.message);
     } finally {
       setUploading(false);
     }
@@ -95,15 +102,14 @@ export default function CVUpload() {
 
   async function onDelete() {
     if (!confirm("Supprimer definitivement ton CV ? Cette action'est irreversible.")) return;
-    setDeleting(true); setActionError(null);
+    setDeleting(true);
     try {
       const r = await fetch(API.cv.remove, { method: "DELETE", headers: devAuthHeaders("user") });
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       setCv(null);
-      setSuccess("CV supprime.");
-      setTimeout(() => setSuccess(null), 3000);
+      notifyCvDeleted();
     } catch (e: any) {
-      setActionError(e?.message || "Erreur lors de la suppression");
+      notifyCvDeleteError(e?.message);
     } finally {
       setDeleting(false);
     }
@@ -134,23 +140,19 @@ export default function CVUpload() {
   }
 
   return (
-    <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+    <section className="relative rounded-2xl border border-slate-200 bg-white p-6 shadow-sm" aria-busy={busy}>
+      {busy ? (
+        <div className="absolute inset-0 z-10 rounded-2xl bg-white/70 backdrop-blur-[1px] flex items-center justify-center">
+          <div className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 shadow-sm">
+            <Loader2 className="w-3.5 h-3.5 animate-spin" /> Traitement du CV en cours...
+          </div>
+        </div>
+      ) : null}
       <div className="flex items-center gap-3 mb-4">
         <FileText className="w-5 h-5 text-indigo-500" />
         <h2 className="text-lg font-medium text-slate-900">Mon CV</h2>
         {cv ? <span className="text-xs text-slate-500">{fmtSize(cv.size_bytes)} - uploade le {fmtDate(cv.uploaded_at)}</span> : null}
       </div>
-
-      {actionError ? (
-        <div className="mb-4 flex items-start gap-2 rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">
-          <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" /> {actionError}
-        </div>
-      ) : null}
-      {success ? (
-        <div className="mb-4 flex items-start gap-2 rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-700">
-          <CheckCircle2 className="w-4 h-4 mt-0.5 shrink-0" /> {success}
-        </div>
-      ) : null}
 
       {cv ? (
         <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
@@ -170,7 +172,7 @@ export default function CVUpload() {
                 </div>
               ) : (
                 <div className="mt-2 text-xs text-slate-400 italic">
-                  Extraction de texte indisponible (PDF scanne ou bibliotheque absente). Le CV sera quand meme transmis a l'agent.
+                  Extraction de texte indisponible (PDF scanne ou bibliotheque absente). Le CV sera quand meme transmis a l&apos;agent.
                 </div>
               )}
             </div>
@@ -187,7 +189,7 @@ export default function CVUpload() {
             <button
               type="button"
               onClick={() => fileInputRef.current?.click()}
-              disabled={uploading}
+              disabled={busy}
               className="inline-flex items-center gap-1 px-3 py-1.5 rounded-md border border-slate-200 text-xs font-medium text-slate-700 hover:border-indigo-400 hover:text-indigo-700 disabled:opacity-50"
             >
               {uploading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Upload className="w-3.5 h-3.5" />}
@@ -196,7 +198,7 @@ export default function CVUpload() {
             <button
               type="button"
               onClick={onDelete}
-              disabled={deleting}
+              disabled={busy}
               className="inline-flex items-center gap-1 px-3 py-1.5 rounded-md border border-rose-200 text-xs font-medium text-rose-700 hover:bg-rose-50 disabled:opacity-50"
             >
               {deleting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
@@ -240,6 +242,7 @@ export default function CVUpload() {
         type="file"
         accept="application/pdf,.pdf"
         className="hidden"
+        disabled={busy}
         onChange={(e) => {
           const f = e.target.files?.[0];
           if (f) uploadFile(f);

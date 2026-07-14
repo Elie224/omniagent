@@ -42,7 +42,7 @@ class SearchJobTool:
                 "company": ["ACME", "DataCorp", "InnovTech", "Cloudly"][i % 4],
                 "location": criteria.get("location", "France"),
                 "contract": "alternance",
-                "url": f"https://{self.platform}.example.com/jobs/{i}",
+                "url": f"https://jobs.invalid/{self.platform}/{i}",
                 "posted_at": "2026-07-0" + str((i % 5) + 1),
                 "description": f"Offre recuperee via browser_service ({self.platform}).",
                 "source": self.platform,

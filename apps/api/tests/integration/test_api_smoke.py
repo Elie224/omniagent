@@ -3,6 +3,7 @@
 Vague B : focus Emploi. Les tests marketing/recouvrement ont ete retires.
 """
 import os
+from pathlib import Path
 # Active un mode de test avant tout import.
 os.environ.setdefault("ENV", "test")
 os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///:memory:")
@@ -176,4 +177,25 @@ def test_events_query_persists_after_publish(client):
     assert r2.status_code == 200
     body = r2.json()
     assert body["count"] >= 0
+
+
+def test_generated_cv_download_returns_404_when_missing(client):
+    r = client.get("/api/v1/employment/cv/generated/download", headers={"X-User": "demo"})
+    assert r.status_code == 404
+
+
+def test_generated_cv_download_returns_pdf_when_present(client):
+    from omniagent.agents.emploi.subagents.cv_agent import TEMPLATE_DIR
+
+    pdf_path = Path(TEMPLATE_DIR) / "demo_cv.pdf"
+    pdf_path.parent.mkdir(parents=True, exist_ok=True)
+    pdf_path.write_bytes(b"%PDF-1.4\n")
+    try:
+        r = client.get("/api/v1/employment/cv/generated/download", headers={"X-User": "demo"})
+        assert r.status_code == 200
+        assert r.headers.get("content-type", "").startswith("application/pdf")
+        assert b"%PDF" in r.content
+    finally:
+        if pdf_path.exists():
+            pdf_path.unlink()
 

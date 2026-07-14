@@ -5,7 +5,7 @@ from typing import Callable
 
 @dataclass
 class ConnectorSpec:
-    name: str              # hunter | adzuna | france_travail | wttj | apec | themuse | local_storage | ...
+    name: str              # hunter | adzuna | france_travail | wttj | themuse | local_storage | ...
     category: str          # plateformes | storage
     factory: Callable
     requires_env: list[str]

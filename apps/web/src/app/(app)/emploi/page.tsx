@@ -8,6 +8,14 @@ import {
   Linkedin, Globe, Filter, ExternalLink,
 } from "lucide-react";
 import { API, devAuthHeaders } from "@/lib/api";
+import { toSafeExternalUrl } from "@/lib/urlSafety";
+import {
+  notifyCvGeneratedPdf,
+  notifyCvGeneratedTexOnly,
+  notifyCvGenerateError,
+  notifyGeneratedCvDownloadStarted,
+  notifyGeneratedCvDownloadError,
+} from "@/lib/cvToasts";
 
 type StepStatus = "pending" | "running" | "done" | "failed" | "skipped";
 
@@ -25,6 +33,7 @@ interface Offer {
   company: string;
   location?: string;
   url?: string;
+  description?: string;
   source?: string;
   posted_at?: string;
   contract?: string;
@@ -58,13 +67,55 @@ interface OrchestratorResponse {
   results?: Record<string, WorkflowResult>;
 }
 
+interface OfferContactEnrichment {
+  company?: string;
+  company_domain?: string;
+  emails?: string[];
+  phones?: string[];
+  primary_email?: string | null;
+  primary_phone?: string | null;
+  scanned_urls?: string[];
+  sources?: string[];
+}
+
+interface OfferLettreAuto {
+  required?: boolean;
+  reason?: string;
+  contract?: string;
+  letter?: {
+    subject?: string;
+    body?: string;
+  } | null;
+}
+
+interface OfferApplicationSend {
+  sent?: boolean;
+  mode?: string;
+  recipient?: string | null;
+  subject?: string | null;
+  attachment_used?: boolean;
+  error?: string;
+}
+
+interface OfferValidationState {
+  offerApproved?: boolean;
+  cvApproved?: boolean;
+  contactApproved?: boolean;
+}
+
+interface TrackedApplication {
+  application_id: string;
+  company: string;
+  position: string;
+  status: string;
+  sent_at?: string;
+  email?: string;
+  source?: string;
+}
+
 const SOURCES: { id: string; label: string; disabled?: boolean; badge?: string }[] = [
   { id: "adzuna",          label: "Adzuna",            badge: "Premium" },
   { id: "france_travail",  label: "France Travail",    badge: "Officiel" },
-  { id: "wttj",            label: "Welcome to the Jungle" },
-  { id: "linkedin",        label: "LinkedIn" },
-  { id: "indeed",          label: "Indeed" },
-  { id: "hellowork",       label: "HelloWork" },
 ];
 
 const RADII: { id: string; label: string; km?: number }[] = [
@@ -85,6 +136,13 @@ const RECENCY: { id: string; label: string; hours?: number }[] = [
   { id: "30j", label: "30 j",  hours: 720 },
 ];
 
+const CONTRACTS: { id: "all" | "emploi" | "alternance" | "stage"; label: string }[] = [
+  { id: "all", label: "Tous" },
+  { id: "emploi", label: "Emploi" },
+  { id: "alternance", label: "Alternance" },
+  { id: "stage", label: "Stage" },
+];
+
 const PIPELINE_TEMPLATE: PipelineStep[] = [
   { name: "intent",      label: "Analyse de la requete",        status: "pending" },
   { name: "discovery",   label: "Recherche des offres",     status: "pending" },
@@ -99,9 +157,11 @@ const DEFAULT_FORM = {
   query: "Data Scientist IA",
   location: "Paris",
   radius: "city",
+  contract: "all" as "all" | "emploi" | "alternance" | "stage",
   recency: "24h",
-  sources: ["adzuna", "france_travail", "wttj", "linkedin", "indeed", "hellowork"] as string[],
+  sources: ["france_travail", "adzuna"] as string[],
   max: 20,
+  scoreThreshold: 0.45,
 };
 
 function chipClass(active: boolean, disabled?: boolean): string {
@@ -157,7 +217,6 @@ function sourceBadge(source?: string) {
   if (s.includes("adzuna")) return <span className="inline-block w-2 h-2 rounded-full bg-amber-500" title="Adzuna" />;
   if (s.includes("france_travail")) return <span className="inline-block w-2 h-2 rounded-full bg-blue-600" title="France Travail" />;
   if (s.includes("wttj") || s.includes("jungle")) return <span className="inline-block w-2 h-2 rounded-full bg-emerald-500" title="Welcome to the Jungle" />;
-  if (s.includes("apec")) return <span className="inline-block w-2 h-2 rounded-full bg-violet-500" title="APEC" />;
   if (s.includes("themuse") || s.includes("muse")) return <span className="inline-block w-2 h-2 rounded-full bg-pink-500" title="The Muse" />;
   return <Globe className="w-3.5 h-3.5" />;
 }
@@ -167,7 +226,6 @@ function sourceLabel(source?: string) {
   if (s.includes("adzuna")) return "Adzuna";
   if (s.includes("france_travail")) return "France Travail";
   if (s.includes("wttj")) return "WTTJ";
-  if (s.includes("apec")) return "APEC";
   if (s.includes("themuse")) return "The Muse";
   if (s.includes("linkedin")) return "LinkedIn";
   if (s.includes("indeed")) return "Indeed";
@@ -179,10 +237,28 @@ function extractOffers(payload: OrchestratorResponse | null): Offer[] {
   if (!payload || !payload.results) return [];
   const out: Offer[] = [];
   for (const r of Object.values(payload.results)) {
-    const o = ((r && (r as any).offers) || (r && (r as any).output?.offers)) as Offer[] | undefined;
-    if (Array.isArray(o)) out.push(...o);
+    const rr = r as any;
+    const candidates = [
+      rr?.offers,
+      rr?.output?.offers,
+      rr?.output?.result?.offers,
+      rr?.output?.data?.offers,
+      rr?.result?.offers,
+    ];
+    for (const c of candidates) {
+      if (Array.isArray(c)) out.push(...(c as Offer[]));
+    }
   }
-  return out;
+  const seen = new Set<string>();
+  const dedup: Offer[] = [];
+  const norm = (v?: string) => (v || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, " ").trim();
+  for (const o of out) {
+    const key = [norm(o.title), norm(o.company), norm(o.location)].join("|");
+    if (seen.has(key)) continue;
+    seen.add(key);
+    dedup.push(o);
+  }
+  return dedup;
 }
 
 function getFranceTravailResultMode(offers: Offer[]): "live" | "mock" | null {
@@ -216,6 +292,22 @@ export default function EmploiPage() {
   const [approved, setApproved] = useState(false);
   const [counters, setCounters] = useState({ found: 0, kept: 0, cv: 0, sent: 0, pending: 0 });
   const [pendingApplication, setPendingApplication] = useState<{ company: string; position: string; location?: string; url?: string; source?: string } | null>(null);
+  const [cvGenerating, setCvGenerating] = useState(false);
+  const [cvDownloading, setCvDownloading] = useState(false);
+  const [contactLoadingByOffer, setContactLoadingByOffer] = useState<Record<string, boolean>>({});
+  const [contactsByOffer, setContactsByOffer] = useState<Record<string, OfferContactEnrichment>>({});
+  const [contactErrorByOffer, setContactErrorByOffer] = useState<Record<string, string>>({});
+  const [lettreLoadingByOffer, setLettreLoadingByOffer] = useState<Record<string, boolean>>({});
+  const [lettreByOffer, setLettreByOffer] = useState<Record<string, OfferLettreAuto>>({});
+  const [lettreErrorByOffer, setLettreErrorByOffer] = useState<Record<string, string>>({});
+  const [sendLoadingByOffer, setSendLoadingByOffer] = useState<Record<string, boolean>>({});
+  const [sendByOffer, setSendByOffer] = useState<Record<string, OfferApplicationSend>>({});
+  const [sendErrorByOffer, setSendErrorByOffer] = useState<Record<string, string>>({});
+  const [validationByOffer, setValidationByOffer] = useState<Record<string, OfferValidationState>>({});
+  const [confirmPhraseByOffer, setConfirmPhraseByOffer] = useState<Record<string, string>>({});
+  const [applications, setApplications] = useState<TrackedApplication[]>([]);
+  const [applicationsLoading, setApplicationsLoading] = useState(false);
+  const cvBusy = cvGenerating || cvDownloading;
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => () => { if (pollRef.current) clearInterval(pollRef.current); }, []);
@@ -243,6 +335,26 @@ export default function EmploiPage() {
     refreshFranceTravailHealth();
   }, [refreshFranceTravailHealth]);
 
+  const refreshApplications = useCallback(async () => {
+    setApplicationsLoading(true);
+    try {
+      const r = await fetch(API.applications.list, {
+        method: "GET",
+        headers: devAuthHeaders("user"),
+      });
+      const data = await r.json().catch(() => ({}));
+      if (r.ok && Array.isArray(data?.applications)) {
+        setApplications(data.applications as TrackedApplication[]);
+      }
+    } finally {
+      setApplicationsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshApplications();
+  }, [refreshApplications]);
+
   function toggleSource(id: string, disabled?: boolean) {
     if (disabled) return;
     setForm((f) => ({
@@ -254,12 +366,43 @@ export default function EmploiPage() {
   }
 
   const matchedOffers = useMemo(() => {
-    return [...offers].sort((a, b) => {
+    const sorted = [...offers].sort((a, b) => {
       const sa = a.match_score ?? a.score ?? 0;
       const sb = b.match_score ?? b.score ?? 0;
       return sb - sa;
     });
-  }, [offers]);
+
+    const selectedSources = new Set(form.sources.map((s) => s.toLowerCase()));
+    const sourceFiltered = selectedSources.size > 0
+      ? sorted.filter((o) => selectedSources.has((o.source || "").toLowerCase()))
+      : sorted;
+
+    const activeBuckets = new Map<string, Offer[]>();
+    for (const o of sourceFiltered) {
+      const src = (o.source || "").toLowerCase();
+      if (!src || !selectedSources.has(src)) continue;
+      if (!activeBuckets.has(src)) activeBuckets.set(src, []);
+      activeBuckets.get(src)!.push(o);
+    }
+
+    // If only one source is selected or one bucket has results, keep score sort.
+    const nonEmptyBuckets = [...activeBuckets.values()].filter((b) => b.length > 0);
+    if (nonEmptyBuckets.length <= 1) return sourceFiltered.slice(0, form.max);
+
+    // Round-robin by source so the UI shows selected sources simultaneously.
+    const order = form.sources.map((s) => s.toLowerCase()).filter((s) => activeBuckets.has(s));
+    const mixed: Offer[] = [];
+    let remaining = nonEmptyBuckets.reduce((acc, b) => acc + b.length, 0);
+    while (remaining > 0) {
+      for (const src of order) {
+        const bucket = activeBuckets.get(src);
+        if (!bucket || bucket.length === 0) continue;
+        mixed.push(bucket.shift()!);
+        remaining -= 1;
+      }
+    }
+    return mixed.slice(0, form.max);
+  }, [offers, form.sources, form.max]);
 
   const onLaunch = useCallback(async () => {
     if (running) return;
@@ -273,10 +416,10 @@ export default function EmploiPage() {
 
     const radiusLabel = RADII.find((r) => r.id === form.radius)?.label || form.radius;
     const recencyHours = RECENCY.find((r) => r.id === form.recency)?.hours ?? 24;
-    const sourcesLabel = form.sources.length > 0 ? form.sources.join("/") : "linkedin";
+    const sourcesLabel = form.sources.length > 0 ? form.sources.join("/") : "france_travail";
     const userMessage = "Trouver " + form.query + " a " + form.location +
       " (rayon " + radiusLabel + ", publie dans les " + recencyHours + "h, sources " + sourcesLabel +
-      ", max " + form.max + ") et lancer une candidature";
+      ", contrat " + form.contract + ", max " + form.max + ") et lancer une candidature";
 
     const newCorr = "emp-" + Date.now() + "-" + Math.floor(Math.random() * 1000);
     setCorrelationId(newCorr);
@@ -289,6 +432,8 @@ export default function EmploiPage() {
         headers: devAuthHeaders("admin"),
         body: JSON.stringify({
           message: userMessage,
+          max_results: form.max,
+          recency_hours: recencyHours,
           context: {
             query: form.query,
             location: form.location,
@@ -309,7 +454,31 @@ export default function EmploiPage() {
       setOrchestrator(data);
 
       const extracted = extractOffers(data);
-      setOffers(extracted);
+      // Chaine manquante produit: filtrage mission + matching profil avant affichage.
+      let filteredOffers = extracted;
+      try {
+        const fmResp = await fetch(API.filteringMatching.run, {
+          method: "POST",
+          headers: devAuthHeaders("user"),
+          body: JSON.stringify({
+            offers: extracted,
+            city: form.location,
+            radius: form.radius,
+            contract: form.contract,
+            recency_hours: recencyHours,
+            score_threshold: form.scoreThreshold,
+            max_results: form.max,
+          }),
+        });
+        const fmData = await fmResp.json().catch(() => ({}));
+        if (fmResp.ok && Array.isArray(fmData?.offers)) {
+          filteredOffers = fmData.offers as Offer[];
+        }
+      } catch {
+        // Fallback best-effort : on garde la liste brute si l agent est indisponible.
+      }
+
+      setOffers(filteredOffers);
       void refreshFranceTravailHealth();
 
       const stepMap: Record<string, StepStatus> = {};
@@ -324,7 +493,7 @@ export default function EmploiPage() {
         detail: data.results?.[s.name]?.status,
       })));
 
-      setCounters((c) => ({ ...c, found: extracted.length, kept: extracted.length }));
+      setCounters((c) => ({ ...c, found: extracted.length, kept: Math.min(filteredOffers.length, form.max) }));
     } catch (err: any) {
       setGlobalError(err?.message || String(err));
       setSteps((cur) => cur.map((s) => s.status === "running" ? { ...s, status: "failed", detail: err?.message } : s));
@@ -332,14 +501,250 @@ export default function EmploiPage() {
       setRunning(false);
       if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
     }
-  }, [form, running]);
+  }, [form, running, refreshFranceTravailHealth]);
 
   const franceTravailResultMode = useMemo(() => getFranceTravailResultMode(matchedOffers), [matchedOffers]);
 
   function onGenerateCV(o: Offer) {
     setSelected(o);
     setApproved(false);
-    setCounters((c) => ({ ...c, cv: c.cv + 1 }));
+  }
+
+  function offerKey(o: Offer): string {
+    return [o.offer_id || o.id || "", o.title || "", o.company || "", o.url || ""].join("|");
+  }
+
+  async function onFindContact(o: Offer) {
+    const key = offerKey(o);
+    setContactErrorByOffer((s) => ({ ...s, [key]: "" }));
+    setContactLoadingByOffer((s) => ({ ...s, [key]: true }));
+    try {
+      const v = validationByOffer[key] || {};
+      if (!v.contactApproved) {
+        throw new Error("Validation legale requise: active d'abord 'Contact RH valide'.");
+      }
+      const r = await fetch(API.contact.enrich, {
+        method: "POST",
+        headers: devAuthHeaders("user"),
+        body: JSON.stringify({
+          offer: {
+            title: o.title || "",
+            company: o.company || "",
+            location: o.location || "",
+            url: o.url || "",
+            description: o.description || "",
+            source: o.source || "",
+            contract: o.contract || "",
+          },
+          company: o.company || "",
+          max_pages: 5,
+          user_confirmation: true,
+          legal_basis: "legitimate_interest",
+        }),
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        throw new Error(data?.detail || ("HTTP " + r.status));
+      }
+      const enriched: OfferContactEnrichment = {
+        company: data.company,
+        company_domain: data.company_domain,
+        emails: data.emails || [],
+        phones: data.phones || [],
+        primary_email: data.primary_email,
+        primary_phone: data.primary_phone,
+        scanned_urls: data.scanned_urls || [],
+        sources: data.sources || [],
+      };
+      setContactsByOffer((s) => ({ ...s, [key]: enriched }));
+    } catch (err: any) {
+      setContactErrorByOffer((s) => ({ ...s, [key]: err?.message || String(err) }));
+    } finally {
+      setContactLoadingByOffer((s) => ({ ...s, [key]: false }));
+    }
+  }
+
+  async function onGenerateLettreIfRequired(o: Offer) {
+    const key = offerKey(o);
+    setLettreErrorByOffer((s) => ({ ...s, [key]: "" }));
+    setLettreLoadingByOffer((s) => ({ ...s, [key]: true }));
+    try {
+      const r = await fetch(API.lettre.auto, {
+        method: "POST",
+        headers: devAuthHeaders("user"),
+        body: JSON.stringify({
+          offer: {
+            offer_id: o.offer_id || o.id || "",
+            title: o.title || "",
+            company: o.company || "",
+            location: o.location || "",
+            url: o.url || "",
+            description: o.description || "",
+            source: o.source || "",
+            contract: o.contract || "",
+          },
+        }),
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        throw new Error(data?.detail || ("HTTP " + r.status));
+      }
+      const generated: OfferLettreAuto = {
+        required: data.required,
+        reason: data.reason,
+        contract: data.contract,
+        letter: data.letter || null,
+      };
+      setLettreByOffer((s) => ({ ...s, [key]: generated }));
+    } catch (err: any) {
+      setLettreErrorByOffer((s) => ({ ...s, [key]: err?.message || String(err) }));
+    } finally {
+      setLettreLoadingByOffer((s) => ({ ...s, [key]: false }));
+    }
+  }
+
+  async function onSendApplication(o: Offer) {
+    const key = offerKey(o);
+    setSendErrorByOffer((s) => ({ ...s, [key]: "" }));
+    setSendLoadingByOffer((s) => ({ ...s, [key]: true }));
+    try {
+      const v = validationByOffer[key] || {};
+      if (!v.offerApproved || !v.cvApproved || !v.contactApproved) {
+        throw new Error("Validation incomplete: confirme offre, CV et contact RH avant l'envoi.");
+      }
+      const phrase = (confirmPhraseByOffer[key] || "").trim();
+      if (phrase.toUpperCase() !== "JE CONFIRME L ENVOI") {
+        throw new Error("Confirmation explicite requise: ecris exactement JE CONFIRME L ENVOI.");
+      }
+      const contact = contactsByOffer[key];
+      const recruiterEmail = contact?.primary_email || (contact?.emails && contact.emails[0]) || "";
+      if (!recruiterEmail) {
+        throw new Error("Aucun email recruteur. Clique d'abord sur Trouver contact RH.");
+      }
+      const lettre = lettreByOffer[key]?.letter || null;
+      const r = await fetch(API.applicationSender.send, {
+        method: "POST",
+        headers: devAuthHeaders("user"),
+        body: JSON.stringify({
+          recruiter_email: recruiterEmail,
+          offer: {
+            offer_id: o.offer_id || o.id || "",
+            title: o.title || "",
+            company: o.company || "",
+            location: o.location || "",
+            url: o.url || "",
+            description: o.description || "",
+            source: o.source || "",
+            contract: o.contract || "",
+          },
+          letter: lettre || {},
+          confirm_phrase: phrase,
+        }),
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        throw new Error(data?.detail || ("HTTP " + r.status));
+      }
+      const sent: OfferApplicationSend = {
+        sent: data.sent,
+        mode: data.mode,
+        recipient: data.recipient,
+        subject: data.subject,
+        attachment_used: data.attachment_used,
+        error: data.error,
+      };
+      setSendByOffer((s) => ({ ...s, [key]: sent }));
+      if (sent.sent) {
+        setCounters((c) => ({ ...c, sent: c.sent + 1 }));
+      }
+      void refreshApplications();
+    } catch (err: any) {
+      setSendErrorByOffer((s) => ({ ...s, [key]: err?.message || String(err) }));
+    } finally {
+      setSendLoadingByOffer((s) => ({ ...s, [key]: false }));
+    }
+  }
+
+  async function onGenerateSelectedCV() {
+    if (!selected || cvGenerating) return;
+    setCvGenerating(true);
+    try {
+      const r = await fetch(API.cv.generate, {
+        method: "POST",
+        headers: devAuthHeaders("user"),
+        body: JSON.stringify({
+          template: templateChoice,
+          offer: {
+            offer_id: selected.offer_id || selected.id || "",
+            title: selected.title || "",
+            company: selected.company || "",
+            location: selected.location || "",
+            url: selected.url || "",
+            description: selected.description || "",
+            source: selected.source || "",
+            contract: selected.contract || "",
+          },
+        }),
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        throw new Error(data?.detail || ("HTTP " + r.status));
+      }
+      setCounters((c) => ({ ...c, cv: c.cv + 1 }));
+      const k = offerKey(selected);
+      setValidationByOffer((s) => ({ ...s, [k]: { ...(s[k] || {}), cvApproved: false } }));
+      if (data?.status === "pdf_generated") {
+        notifyCvGeneratedPdf();
+      } else {
+        notifyCvGeneratedTexOnly();
+      }
+    } catch (err: any) {
+      notifyCvGenerateError(err?.message);
+    } finally {
+      setCvGenerating(false);
+    }
+  }
+
+  async function onUpdateApplicationStatus(applicationId: string, status: string) {
+    try {
+      await fetch(API.applications.patch(applicationId), {
+        method: "PATCH",
+        headers: devAuthHeaders("user"),
+        body: JSON.stringify({ status }),
+      });
+      await refreshApplications();
+    } catch {
+      // best effort
+    }
+  }
+
+  async function onDownloadGeneratedCV() {
+    if (cvDownloading) return;
+    setCvDownloading(true);
+    try {
+      const r = await fetch(API.cv.generatedDownload, {
+        method: "GET",
+        headers: devAuthHeaders("user"),
+      });
+      if (!r.ok) {
+        const data = await r.json().catch(() => ({}));
+        throw new Error(data?.detail || ("HTTP " + r.status));
+      }
+      const blob = await r.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "cv_genere.pdf";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      notifyGeneratedCvDownloadStarted();
+    } catch (err: any) {
+      notifyGeneratedCvDownloadError(err?.message);
+    } finally {
+      setCvDownloading(false);
+    }
   }
 
   function onApprove() {
@@ -347,11 +752,12 @@ export default function EmploiPage() {
     setCounters((c) => ({ ...c, sent: c.sent + 1 }));
     // Auto-enregistre la candidature cote backend (visible sur /candidatures)
     if (selected) {
+      const safeUrl = toSafeExternalUrl(selected.url);
       const payload = {
         company: selected.company || "",
         position: selected.title || "",
         location: selected.location || "",
-        url: selected.url || "",
+        url: safeUrl || "",
         source: selected.source || "",
         status: "sent",
       };
@@ -360,9 +766,14 @@ export default function EmploiPage() {
         method: "POST",
         headers: devAuthHeaders("user"),
         body: JSON.stringify(payload),
-      }).catch(() => { /* best-effort */ });
+      }).then(() => refreshApplications()).catch(() => { /* best-effort */ });
     }
   }
+
+  useEffect(() => {
+    const pending = applications.filter((a) => ["draft", "sent", "viewed"].includes((a.status || "").toLowerCase())).length;
+    setCounters((c) => ({ ...c, pending }));
+  }, [applications]);
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900">
@@ -453,12 +864,27 @@ export default function EmploiPage() {
             </div>
           </div>
 
+          <div className="mt-5">
+            <div className="text-sm font-medium text-slate-700 mb-2">Type de contrat</div>
+            <div className="flex flex-wrap gap-2">
+              {CONTRACTS.map((c) => (
+                <button key={c.id} type="button" onClick={() => setForm({ ...form, contract: c.id })} className={chipClass(form.contract === c.id)}>{c.label}</button>
+              ))}
+            </div>
+          </div>
+
           <div className="mt-6 flex items-center justify-between gap-4">
             <label className="block">
               <span className="text-sm font-medium text-slate-700">Nombre maximum</span>
               <input type="number" min={1} max={100} value={form.max}
                 onChange={(e) => setForm({ ...form, max: Math.max(1, Math.min(100, Number(e.target.value) || 1)) })}
                 className="mt-1 w-24 px-3 py-2 rounded-lg border border-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-200 focus:border-indigo-400" />
+            </label>
+            <label className="block">
+              <span className="text-sm font-medium text-slate-700">Seuil de compatibilite</span>
+              <input type="number" min={0} max={1} step={0.05} value={form.scoreThreshold}
+                onChange={(e) => setForm({ ...form, scoreThreshold: Math.max(0, Math.min(1, Number(e.target.value) || 0)) })}
+                className="mt-1 w-28 px-3 py-2 rounded-lg border border-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-200 focus:border-indigo-400" />
             </label>
             <button type="button" onClick={onLaunch} disabled={running || !form.query.trim()} className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg bg-indigo-600 text-white font-medium hover:bg-indigo-500 disabled:bg-slate-300 disabled:cursor-not-allowed">
               {running ? <Loader2 className="w-4 h-4 animate-spin" /> : <Zap className="w-4 h-4" />} Lancer la mission
@@ -530,6 +956,19 @@ export default function EmploiPage() {
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               {matchedOffers.map((o, i) => {
                 const score = o.match_score ?? o.score ?? 0;
+                const safeOfferUrl = toSafeExternalUrl(o.url);
+                const k = offerKey(o);
+                const contactLoading = !!contactLoadingByOffer[k];
+                const contactErr = contactErrorByOffer[k];
+                const contact = contactsByOffer[k];
+                const lettreLoading = !!lettreLoadingByOffer[k];
+                const lettreErr = lettreErrorByOffer[k];
+                const lettre = lettreByOffer[k];
+                const sendLoading = !!sendLoadingByOffer[k];
+                const sendErr = sendErrorByOffer[k];
+                const sendRes = sendByOffer[k];
+                const validation = validationByOffer[k] || {};
+                const sendPhrase = confirmPhraseByOffer[k] || "";
                 return (
                   <article key={(o.offer_id || o.id || "off") + "-" + i} className="rounded-xl border border-slate-200 p-4 hover:shadow-md transition">
                     <div className="flex items-start justify-between gap-2">
@@ -550,8 +989,78 @@ export default function EmploiPage() {
                     </div>
                     <div className="mt-3 flex items-center gap-2">
                       <button type="button" onClick={() => onGenerateCV(o)} className="inline-flex items-center gap-1 px-3 py-1.5 rounded-md bg-indigo-600 text-white text-xs font-medium hover:bg-indigo-500"><FileText className="w-3.5 h-3.5" /> Adapter mon CV</button>
-                      {o.url ? (<a href={o.url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 px-3 py-1.5 rounded-md border border-slate-200 text-xs font-medium text-slate-700 hover:border-slate-300"><ExternalLink className="w-3.5 h-3.5" /> Voir l 'offre</a>) : null}
+                      <button type="button" onClick={() => onGenerateLettreIfRequired(o)} disabled={lettreLoading} className="inline-flex items-center gap-1 px-3 py-1.5 rounded-md border border-slate-200 text-xs font-medium text-slate-700 hover:border-slate-300 disabled:opacity-60">
+                        {lettreLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <FileText className="w-3.5 h-3.5" />} Lettre auto (si requise)
+                      </button>
+                      <button type="button" onClick={() => onFindContact(o)} disabled={contactLoading} className="inline-flex items-center gap-1 px-3 py-1.5 rounded-md border border-slate-200 text-xs font-medium text-slate-700 hover:border-slate-300 disabled:opacity-60">
+                        {contactLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Globe className="w-3.5 h-3.5" />} Trouver contact RH
+                      </button>
+                      <button type="button" onClick={() => onSendApplication(o)} disabled={sendLoading} className="inline-flex items-center gap-1 px-3 py-1.5 rounded-md border border-emerald-200 text-xs font-medium text-emerald-700 hover:border-emerald-300 disabled:opacity-60">
+                        {sendLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ShieldCheck className="w-3.5 h-3.5" />} Envoyer candidature
+                      </button>
+                      {safeOfferUrl ? (
+                        <a href={safeOfferUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 px-3 py-1.5 rounded-md border border-slate-200 text-xs font-medium text-slate-700 hover:border-slate-300"><ExternalLink className="w-3.5 h-3.5" /> Voir l&apos;offre</a>
+                      ) : (
+                        <span className="inline-flex items-center gap-1 px-3 py-1.5 rounded-md border border-slate-200 text-xs font-medium text-slate-400" title="Lien annonceur indisponible">Annonce non verifiable</span>
+                      )}
                     </div>
+                    <div className="mt-2 rounded-md border border-slate-200 bg-slate-50 p-2 text-xs text-slate-700 space-y-2">
+                      <div className="font-medium text-slate-800">Validation utilisateur (assistant sous controle)</div>
+                      <div className="flex flex-wrap gap-2">
+                        <button type="button" onClick={() => setValidationByOffer((s) => ({ ...s, [k]: { ...(s[k] || {}), offerApproved: !(s[k]?.offerApproved) } }))} className={"px-2 py-1 rounded border " + (validation.offerApproved ? "border-emerald-300 bg-emerald-50 text-emerald-700" : "border-slate-300 bg-white text-slate-700")}>Offre validee</button>
+                        <button type="button" onClick={() => setValidationByOffer((s) => ({ ...s, [k]: { ...(s[k] || {}), cvApproved: !(s[k]?.cvApproved) } }))} className={"px-2 py-1 rounded border " + (validation.cvApproved ? "border-emerald-300 bg-emerald-50 text-emerald-700" : "border-slate-300 bg-white text-slate-700")}>CV valide</button>
+                        <button type="button" onClick={() => setValidationByOffer((s) => ({ ...s, [k]: { ...(s[k] || {}), contactApproved: !(s[k]?.contactApproved) } }))} className={"px-2 py-1 rounded border " + (validation.contactApproved ? "border-emerald-300 bg-emerald-50 text-emerald-700" : "border-slate-300 bg-white text-slate-700")}>Contact RH valide</button>
+                      </div>
+                      <div>
+                        <label className="block text-[11px] text-slate-600 mb-1">Confirmation explicite avant envoi (obligatoire)</label>
+                        <input
+                          className="w-full px-2 py-1.5 rounded border border-slate-300 bg-white"
+                          value={sendPhrase}
+                          onChange={(e) => setConfirmPhraseByOffer((s) => ({ ...s, [k]: e.target.value }))}
+                          placeholder="JE CONFIRME L ENVOI"
+                        />
+                      </div>
+                    </div>
+                    {contactErr ? (
+                      <div className="mt-2 text-xs text-rose-600">Contact indisponible: {contactErr}</div>
+                    ) : null}
+                    {lettreErr ? (
+                      <div className="mt-2 text-xs text-rose-600">Lettre indisponible: {lettreErr}</div>
+                    ) : null}
+                    {sendErr ? (
+                      <div className="mt-2 text-xs text-rose-600">Envoi indisponible: {sendErr}</div>
+                    ) : null}
+                    {contact ? (
+                      <div className="mt-2 rounded-md border border-slate-200 bg-slate-50 p-2 text-xs text-slate-700 space-y-1">
+                        <div><span className="font-medium">Email:</span> {contact.primary_email || (contact.emails && contact.emails[0]) || "-"}</div>
+                        <div><span className="font-medium">Telephone:</span> {contact.primary_phone || (contact.phones && contact.phones[0]) || "-"}</div>
+                        {contact.company_domain ? <div><span className="font-medium">Domaine:</span> {contact.company_domain}</div> : null}
+                      </div>
+                    ) : null}
+                    {lettre ? (
+                      <div className="mt-2 rounded-md border border-indigo-200 bg-indigo-50 p-2 text-xs text-indigo-900 space-y-1">
+                        <div>
+                          <span className="font-medium">Lettre demandee:</span> {lettre.required ? "oui" : "non"}
+                        </div>
+                        {lettre.letter?.subject ? (
+                          <div><span className="font-medium">Objet:</span> {lettre.letter.subject}</div>
+                        ) : null}
+                        {lettre.letter?.body ? (
+                          <div className="whitespace-pre-wrap text-[11px] leading-relaxed max-h-40 overflow-auto border border-indigo-100 bg-white rounded p-2">
+                            {lettre.letter.body}
+                          </div>
+                        ) : null}
+                      </div>
+                    ) : null}
+                    {sendRes ? (
+                      <div className="mt-2 rounded-md border border-emerald-200 bg-emerald-50 p-2 text-xs text-emerald-900 space-y-1">
+                        <div><span className="font-medium">Envoi:</span> {sendRes.sent ? "envoye" : "brouillon"}</div>
+                        {sendRes.recipient ? <div><span className="font-medium">Destinataire:</span> {sendRes.recipient}</div> : null}
+                        {sendRes.subject ? <div><span className="font-medium">Objet:</span> {sendRes.subject}</div> : null}
+                        {typeof sendRes.attachment_used === "boolean" ? <div><span className="font-medium">CV joint:</span> {sendRes.attachment_used ? "oui" : "non"}</div> : null}
+                        {sendRes.error ? <div><span className="font-medium">Erreur:</span> {sendRes.error}</div> : null}
+                      </div>
+                    ) : null}
                   </article>
                 );
               })}
@@ -560,7 +1069,14 @@ export default function EmploiPage() {
         </section>
 
         {selected ? (
-          <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+          <section className="relative rounded-2xl border border-slate-200 bg-white p-6 shadow-sm" aria-busy={cvBusy}>
+            {cvBusy ? (
+              <div className="absolute inset-0 z-10 rounded-2xl bg-white/70 backdrop-blur-[1px] flex items-center justify-center">
+                <div className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 shadow-sm">
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" /> Traitement du CV en cours...
+                </div>
+              </div>
+            ) : null}
             <div className="flex items-center gap-2 mb-5">
               <FileText className="w-4 h-4 text-indigo-500" />
               <h2 className="text-lg font-medium">CV Studio</h2>
@@ -573,8 +1089,14 @@ export default function EmploiPage() {
               ))}
             </div>
             <div className="mt-6 flex items-center justify-end gap-2">
+              <button type="button" onClick={onGenerateSelectedCV} disabled={cvBusy} className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-indigo-600 text-white text-sm font-medium hover:bg-indigo-500 disabled:bg-slate-300 disabled:cursor-not-allowed">
+                {cvGenerating ? <Loader2 className="w-4 h-4 animate-spin" /> : <FileText className="w-4 h-4" />} Generer mon CV
+              </button>
+              <button type="button" onClick={onDownloadGeneratedCV} disabled={cvBusy} className="inline-flex items-center gap-2 px-4 py-2 rounded-lg border border-slate-300 text-slate-700 text-sm font-medium hover:border-slate-400 disabled:opacity-50 disabled:cursor-not-allowed">
+                {cvDownloading ? <Loader2 className="w-4 h-4 animate-spin" /> : <ExternalLink className="w-4 h-4" />} Telecharger le CV genere
+              </button>
               {!approved ? (
-                <button type="button" onClick={onApprove} className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-emerald-600 text-white text-sm font-medium hover:bg-emerald-500"><ShieldCheck className="w-4 h-4" /> Valider et preparer la candidature</button>
+                <button type="button" onClick={onApprove} disabled={cvBusy} className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-emerald-600 text-white text-sm font-medium hover:bg-emerald-500 disabled:bg-slate-300 disabled:cursor-not-allowed"><ShieldCheck className="w-4 h-4" /> Valider et preparer la candidature</button>
               ) : (
                 <div className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-emerald-50 text-emerald-700 text-sm font-medium border border-emerald-200"><CheckCircle2 className="w-4 h-4" /> Candidature validee. Envoi simule.</div>
               )}
@@ -600,6 +1122,37 @@ export default function EmploiPage() {
               </div>
             ))}
           </div>
+        </section>
+
+        <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div className="flex items-center gap-2 mb-5">
+            <ShieldCheck className="w-4 h-4 text-indigo-500" />
+            <h2 className="text-lg font-medium">Tracking candidatures (mini-CRM)</h2>
+            <span className="ml-auto text-xs text-slate-500">{applicationsLoading ? "chargement..." : `${applications.length} enregistrees`}</span>
+          </div>
+          {applications.length === 0 ? (
+            <p className="text-sm text-slate-500">Aucune candidature suivie pour le moment.</p>
+          ) : (
+            <div className="space-y-3">
+              {applications.slice(0, 10).map((a) => (
+                <div key={a.application_id} className="rounded-lg border border-slate-200 p-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <div className="text-sm font-medium text-slate-900">{a.position} - {a.company}</div>
+                      <div className="text-xs text-slate-500">{a.email || "contact inconnu"} {a.source ? `- ${a.source}` : ""}</div>
+                    </div>
+                    <span className="text-xs px-2 py-1 rounded-full bg-slate-100 text-slate-700">{a.status}</span>
+                  </div>
+                  <div className="mt-2 flex flex-wrap gap-2 text-xs">
+                    <button type="button" onClick={() => onUpdateApplicationStatus(a.application_id, "sent")} className="px-2 py-1 rounded border border-slate-300">Envoye</button>
+                    <button type="button" onClick={() => onUpdateApplicationStatus(a.application_id, "interview")} className="px-2 py-1 rounded border border-slate-300">Relance/entretien</button>
+                    <button type="button" onClick={() => onUpdateApplicationStatus(a.application_id, "viewed")} className="px-2 py-1 rounded border border-slate-300">Reponse recue</button>
+                    <button type="button" onClick={() => onUpdateApplicationStatus(a.application_id, "rejected")} className="px-2 py-1 rounded border border-slate-300">Refus</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </section>
 
       </div>

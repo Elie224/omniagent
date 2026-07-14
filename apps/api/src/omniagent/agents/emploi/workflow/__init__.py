@@ -112,14 +112,15 @@ class JobDiscoveryAgent:
         return {
             "keywords": input_data.get("query", ""),
             "location": input_data.get("location", ""),
+            "radius": input_data.get("radius", "city"),
             "max_results": int(input_data.get("max_results", 20)),
+            "recency_hours": int(input_data.get("recency_hours", 0) or 0),
             "include_linkedin": "linkedin" in input_data.get("sources", []),
             "include_indeed": "indeed" in input_data.get("sources", []),
             "include_hellowork": "hellowork" in input_data.get("sources", []),
             "include_adzuna": "adzuna" in input_data.get("sources", []),
             "include_france_travail": "france_travail" in input_data.get("sources", []),
             "include_wttj": "wttj" in input_data.get("sources", []),
-            "include_apec": "apec" in input_data.get("sources", []),
             "include_themuse": "themuse" in input_data.get("sources", []),
             "seed": seed,
         }
@@ -145,7 +146,7 @@ class JobDiscoveryAgent:
         return out
 
     async def run(self, input_data: dict, context: dict) -> dict:
-        sources = input_data.get("sources", ["linkedin", "indeed", "hellowork"])
+        sources = input_data.get("sources", ["france_travail"])
         query = input_data.get("query", "")
         location = input_data.get("location", "")
         max_results = int(input_data.get("max_results", 20))
@@ -159,50 +160,54 @@ class JobDiscoveryAgent:
 
         # Vague B : on essaie d utiliser le vrai MultiSourceBackend.
         offers: list[dict] = []
-        backend_used = "mock"
+        backend_used = "none"
         backend_errors: dict[str, str] = {}
         try:
             from omniagent.agents.emploi.job_search import (
-                JobSearcher, MockBackend, ConnectorBackend, MultiSourceBackend,
+                ConnectorBackend, MultiSourceBackend,
             )
+
             criteria = self._build_criteria(input_data, seed)
+            if not criteria.get("recency_hours"):
+                criteria["recency_hours"] = int(context.get("recency_hours", 0) or 0)
             selected_sources = input_data.get("sources", []) or []
+            connector_sources = {"france_travail", "adzuna"}
+
             backends = []
+            has_connector_backend = False
             for source in selected_sources:
-                if source in {"adzuna", "france_travail", "wttj", "apec", "themuse"}:
-                    backends.append(ConnectorBackend(source))
-                elif source in {"linkedin", "indeed", "hellowork"}:
-                    backends.append(MockBackend(source))
+                if source in connector_sources:
+                    try:
+                        backends.append(ConnectorBackend(source))
+                        has_connector_backend = True
+                    except Exception as e:
+                        backend_errors[source] = f"connector_init_error: {type(e).__name__}: {e}"
+                else:
+                    backend_errors[source] = "source_disabled_non_real"
+
             if not backends:
-                backends = [MockBackend("linkedin")]
-            # MultiSourceBackend : vrais connecteurs en priorite, MockBackend en fallback
-            # (le fallback garantit qu on a toujours au moins 1 source qui repond,
-            # meme en dev sans cles API).
-            multi = MultiSourceBackend(
-                backends,
-                name="job_discovery",
-                use_breaker=True,
-            )
-            raw_offers = await multi.search(criteria)
-            offers = self._offers_to_dicts(raw_offers)
-            backend_used = "multi_source_mock"
-            backend_errors = dict(multi.last_errors)
+                if selected_sources:
+                    if any(s in connector_sources for s in selected_sources):
+                        backend_used = "multi_source_connector"
+                else:
+                    backend_used = "none"
+
+            if backends:
+                # MultiSourceBackend execute uniquement des connecteurs reels.
+                multi = MultiSourceBackend(
+                    backends,
+                    name="job_discovery",
+                    use_breaker=True,
+                )
+                raw_offers = await multi.search(criteria)
+                offers = self._offers_to_dicts(raw_offers)
+                if has_connector_backend:
+                    backend_used = "multi_source_connector"
+                backend_errors.update(dict(multi.last_errors))
+
         except Exception as e:
-            # Fallback : generation deterministe si le backend n est pas dispo
+            # Product mode default: do not fabricate offers.
             backend_errors["backend_import"] = f"{type(e).__name__}: {e}"
-            for i in range(min(max_results, 10)):
-                offers.append({
-                    "offer_id": f"off-{seed % 100000}-{i}",
-                    "title": f"{query or 'Data Engineer'} (offre {i})",
-                    "company": f"Company {i % 5}",
-                    "location": location or "Paris",
-                    "contract": "alternance",
-                    "url": f"https://stub.example.com/offer/{i}",
-                    "posted_at": "2026-07-01",
-                    "description": f"Offre mock basee sur la requete {query!r}.",
-                    "source": sources[i % len(sources)] if sources else "linkedin",
-                    "score": 0.5,
-                })
 
         # Tri par score desc
         offers.sort(key=lambda o: -float(o.get("score", 0.0)))

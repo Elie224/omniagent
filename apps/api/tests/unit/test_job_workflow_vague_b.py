@@ -14,24 +14,22 @@ from omniagent.agents.emploi.workflow import (
 
 @pytest.mark.asyncio
 async def test_discovery_uses_real_backend():
-    """Le discovery utilise le MultiSourceBackend (champ backend_used)."""
+    """Le discovery n injecte pas de mock implicite en mode produit."""
     out = await JobDiscoveryAgent().run(
         {"query": "data engineer", "location": "Paris", "max_results": 5},
         {"seed": 42},
     )
-    assert out["backend_used"] in ("multi_source_mock", "mock")
-    # NB : on accepte >=1 car avec les nouveaux connecteurs (Adzuna, FT, WTTJ)
-    # non configures, le MultiSourceBackend peut s arreter a la premiere source
-    # reelle (typiquement MockBackend("linkedin") -> 5 offres).
-    # Le but du test est de valider le wiring, pas le compte exact.
-    assert out["count"] >= 1
+    assert out["backend_used"] in ("none", "multi_source_connector", "multi_source_mixed", "multi_source_mock")
+    # En mode produit strict, on accepte 0 offre si aucune source reelle
+    # n est exploitable.
+    assert out["count"] >= 0
     # Les champs normalises sont presents
     assert all("offer_id" in o and "company" in o for o in out["offers"])
 
 
 @pytest.mark.asyncio
 async def test_discovery_falls_back_when_backend_unavailable(monkeypatch):
-    """Si le backend est indisponible (import fail), fallback deterministe."""
+    """Si le backend est indisponible, aucune offre n est fabriquee par defaut."""
     import omniagent.agents.emploi.workflow as wf
 
     def boom(*a, **kw):
@@ -42,8 +40,7 @@ async def test_discovery_falls_back_when_backend_unavailable(monkeypatch):
         {"query": "X", "location": "Y", "max_results": 3},
         {"seed": 7},
     )
-    assert out["count"] == 3
-    assert out["backend_used"] == "mock"
+    assert out["count"] == 0
     assert "backend_import" in out["backend_errors"]
 
 
@@ -55,6 +52,20 @@ async def test_discovery_returns_offers_sorted_by_score_desc():
     )
     scores = [o.get("score", 0) for o in out["offers"]]
     assert scores == sorted(scores, reverse=True)
+
+
+@pytest.mark.asyncio
+async def test_discovery_reports_connector_backend_when_connector_source_selected():
+    out = await JobDiscoveryAgent().run(
+        {
+            "query": "data",
+            "location": "Paris",
+            "max_results": 5,
+            "sources": ["france_travail"],
+        },
+        {"seed": 42},
+    )
+    assert out["backend_used"] == "multi_source_connector"
 
 
 # ---------- JobFilterAgent : time-window filtering ----------

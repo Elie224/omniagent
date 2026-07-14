@@ -39,13 +39,32 @@ class Settings(BaseSettings):
     anthropic_api_key: str = ""
 
     # Plateformes emploi (job boards)
+    hunter_api_key: str = ""
+    filtering_matching_agent_api_key: str = ""
+    mission_controller_agent_api_key: str = ""
     adzuna_app_id: str = ""
     adzuna_api_key: str = ""
     ft_client_id: str = ""
     ft_client_secret: str = ""
-    apec_client_id: str = ""
-    apec_client_secret: str = ""
     themuse_api_key: str = ""
+
+    # SMTP (envoi email candidature)
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_username: str = ""
+    smtp_password: str = ""
+    smtp_use_tls: bool = True
+    smtp_from_email: str = ""
+    smtp_from_name: str = "OmniAgent"
+
+    # Fiabilite connecteurs emploi (quotas/rate limits)
+    employment_connector_cache_ttl_s: int = 300
+    employment_connector_max_retries: int = 2
+    employment_connector_backoff_base_s: float = 0.5
+
+    # Garde-fous envoi candidature
+    application_sender_confirmation_phrase: str = "JE CONFIRME L ENVOI"
+    application_sender_require_cv: bool = True
 
     # Securite
     secret_key: str = "change-me-in-prod"

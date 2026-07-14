@@ -40,12 +40,29 @@ export const API = {
     patch:  (id: string) => `/api/api/v1/employment/applications/${id}`,
     remove: (id: string) => `/api/api/v1/employment/applications/${id}`,
   },
+  contact: {
+    enrich: "/api/api/v1/employment/contact/enrich",
+  },
+  filteringMatching: {
+    run: "/api/api/v1/employment/offers/filter-match",
+  },
+  missionController: {
+    run: "/api/api/v1/employment/mission/run",
+  },
+  lettre: {
+    auto: "/api/api/v1/employment/lettre/auto",
+  },
+  applicationSender: {
+    send: "/api/api/v1/employment/application/send",
+  },
   // Upload / telechargement du CV candidat (PDF, max 5 Mo)
   cv: {
     upload:   "/api/api/v1/employment/cv/upload",
     get:      "/api/api/v1/employment/cv",
     remove:   "/api/api/v1/employment/cv",
     download: "/api/api/v1/employment/cv/download",
+    generate: "/api/api/v1/employment/cv/generate",
+    generatedDownload: "/api/api/v1/employment/cv/generated/download",
   },
 };
 

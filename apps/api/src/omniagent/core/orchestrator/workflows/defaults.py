@@ -110,9 +110,9 @@ def _wf_intent_research() -> WorkflowDefinition:
         steps=[
             WorkflowStep("coordinate", "agent_emploi",
                           description="Coordonne l intake."),
-            WorkflowStep("linkedin", "agent_linkedin",
+            WorkflowStep("france_travail", "agent_france_travail",
                           depends_on=["coordinate"],
-                          description="Discovery LinkedIn."),
+                          description="Discovery France Travail (API officielle)."),
         ],
     )
 

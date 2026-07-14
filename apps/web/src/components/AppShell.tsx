@@ -223,7 +223,7 @@ function Footer() {
       <div className="mx-auto flex max-w-7xl flex-col items-start justify-between gap-2 px-4 py-6 text-xs text-slate-500 sm:flex-row sm:items-center sm:px-6 lg:px-8 dark:text-slate-400">
         <div className="flex items-center gap-2">
           <span className="inline-flex h-2 w-2 rounded-full bg-emerald-500" />
-          OmniAgent - plateforme SaaS d'agents IA specialisee emploi
+          OmniAgent - plateforme SaaS d&apos;agents IA specialisee emploi
         </div>
         <div className="flex items-center gap-4">
           <span>v0.1.0</span>

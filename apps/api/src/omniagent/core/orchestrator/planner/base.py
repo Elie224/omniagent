@@ -48,17 +48,9 @@ class TemplatePlanner(Planner):
         self._templates: dict[str, list[PlanStep]] = {
             "search_job_and_apply": [
                 PlanStep("agent_emploi", [], {}, "Coordonner la recherche"),
-                PlanStep("agent_linkedin",  ["agent_emploi"], {"criteria": "user.criteria"}, "Recherche LinkedIn"),
-                PlanStep("agent_indeed",    ["agent_emploi"], {"criteria": "user.criteria"}, "Recherche Indeed"),
-                PlanStep("agent_hellowork", ["agent_emploi"], {"criteria": "user.criteria"}, "Recherche HelloWork"),
                 PlanStep("agent_adzuna",         ["agent_emploi"], {"criteria": "user.criteria"}, "Recherche Adzuna"),
                 PlanStep("agent_france_travail", ["agent_emploi"], {"criteria": "user.criteria"}, "Recherche France Travail"),
-                PlanStep("agent_wttj",           ["agent_emploi"], {"criteria": "user.criteria"}, "Recherche Welcome to the Jungle"),
-                PlanStep("agent_apec",            ["agent_emploi"], {"criteria": "user.criteria"}, "Recherche APEC"),
-                PlanStep("agent_themuse",         ["agent_emploi"], {"criteria": "user.criteria"}, "Recherche The Muse"),
-                PlanStep("agent_cv",        ["agent_linkedin", "agent_indeed", "agent_hellowork",
-                                              "agent_adzuna", "agent_france_travail", "agent_wttj",
-                                              "agent_apec", "agent_themuse"],
+                PlanStep("agent_cv",        ["agent_adzuna", "agent_france_travail"],
                          {"offer_id": "selected_offer"}, "Adapter le CV"),
                 PlanStep("agent_lettre",    ["agent_cv"], {"offer_id": "selected_offer"}, "Rediger la lettre"),
             ],

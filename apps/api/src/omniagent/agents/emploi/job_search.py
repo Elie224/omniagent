@@ -10,12 +10,17 @@ leve une erreur explicite avec un message d installation.
 from __future__ import annotations
 import asyncio
 import hashlib
+import math
 import random
+import unicodedata
+import time
+from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass, asdict
 from typing import Protocol
 
 from omniagent.connectors.manager import connector_manager
 from omniagent.core.resilience.circuit_breaker import CircuitOpenError
+from omniagent.core.config import settings
 
 
 @dataclass
@@ -67,7 +72,7 @@ class MockBackend:
                 company=seed.choice(self._companies),
                 location=seed.choice(self._locations),
                 contract=seed.choice(["alternance", "stage", "emploi"]),
-                url=f"https://{self.name}.example.com/jobs/{i}",
+                url=f"https://jobs.invalid/{self.name}/{i}",
                 posted_at="2026-07-0" + str((i % 5) + 1),
                 description=f"Offre {keywords} chez {self._companies[0]} (mock).",
                 source=self.name,
@@ -88,18 +93,119 @@ class ConnectorBackend:
         self.name = source
         self._connector = connector_manager.get(source)
 
+    _cache: dict[str, tuple[float, list[JobOffer]]] = {}
+
+    @staticmethod
+    def _parse_offer_datetime(value: str) -> datetime | None:
+        if not value:
+            return None
+        txt = str(value).strip()
+        if not txt:
+            return None
+        if txt.endswith("Z"):
+            txt = txt[:-1] + "+00:00"
+        try:
+            dt = datetime.fromisoformat(txt)
+        except ValueError:
+            try:
+                dt = datetime.fromisoformat(txt.split("T")[0])
+            except Exception:
+                return None
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+
+    @staticmethod
+    def _filter_by_recency(raw_offers: list[dict], recency_hours: int) -> list[dict]:
+        if recency_hours <= 0:
+            return raw_offers
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=recency_hours)
+        out: list[dict] = []
+        for offer in raw_offers:
+            posted = ConnectorBackend._parse_offer_datetime(str(offer.get("posted_at") or ""))
+            if posted is None:
+                continue
+            if posted >= cutoff:
+                out.append(offer)
+        return out
+
+    @staticmethod
+    def _norm_text(value: str) -> str:
+        base = unicodedata.normalize("NFKD", value or "")
+        no_accents = "".join(ch for ch in base if not unicodedata.combining(ch))
+        return " ".join(no_accents.lower().split())
+
+    @staticmethod
+    def _filter_by_location(raw_offers: list[dict], location: str, radius: str) -> list[dict]:
+        if not location:
+            return raw_offers
+        if (radius or "").lower() != "city":
+            return raw_offers
+        target = ConnectorBackend._norm_text(location)
+        if not target:
+            return raw_offers
+        out: list[dict] = []
+        for offer in raw_offers:
+            loc = ConnectorBackend._norm_text(str(offer.get("location") or ""))
+            if target in loc:
+                out.append(offer)
+        return out
+
     async def search(self, criteria: dict) -> list[JobOffer]:
         if self._connector is None:
             return []
         if not getattr(self._connector, "is_configured", True):
             # Connecteur non configure -> pas de resultats (et pas de bruit).
             return []
-        raw = await self._connector.search(
-            query=criteria.get("keywords", ""),
-            location=criteria.get("location", ""),
-            contract=criteria.get("contract") if criteria.get("contract") not in (None, "all") else None,
-            max_results=int(criteria.get("max_results", 20)),
-        )
+        cache_key = f"{self.name}:{repr(sorted(criteria.items()))}"
+        ttl = max(0, int(getattr(settings, "employment_connector_cache_ttl_s", 300) or 300))
+        if ttl > 0:
+            cached = self._cache.get(cache_key)
+            now = time.time()
+            if cached and (now - cached[0] <= ttl):
+                return [JobOffer(**o.to_dict()) for o in cached[1]]
+        recency_hours = int(criteria.get("recency_hours") or 0)
+        radius = str(criteria.get("radius") or "city")
+        search_kwargs = {
+            "query": criteria.get("keywords", ""),
+            "location": criteria.get("location", ""),
+            "contract": criteria.get("contract") if criteria.get("contract") not in (None, "all") else None,
+            "max_results": int(criteria.get("max_results", 20)),
+        }
+        if self.name == "france_travail":
+            radius_km = {"20km": 20, "50km": 50}.get(radius.lower())
+            if radius_km:
+                search_kwargs["diameter_km"] = radius_km
+        if recency_hours > 0:
+            if self.name == "adzuna":
+                search_kwargs["max_days_old"] = max(1, math.ceil(recency_hours / 24))
+            elif self.name == "france_travail":
+                search_kwargs["min_creation_date"] = (
+                    datetime.now(timezone.utc) - timedelta(hours=recency_hours)
+                ).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+        async def _call_with_backoff(kwargs: dict) -> list[dict]:
+            retries = max(0, int(getattr(settings, "employment_connector_max_retries", 2) or 2))
+            base_sleep = float(getattr(settings, "employment_connector_backoff_base_s", 0.5) or 0.5)
+            for attempt in range(retries + 1):
+                try:
+                    return await self._connector.search(**kwargs)
+                except Exception as e:
+                    msg = str(e).lower()
+                    transient = any(t in msg for t in ["429", "rate", "too many", "timeout", "tempor", "503", "502", "connection"]) 
+                    if attempt >= retries or not transient:
+                        raise
+                    await asyncio.sleep(base_sleep * (2 ** attempt))
+
+        try:
+            raw = await _call_with_backoff(search_kwargs)
+        except TypeError:
+            # Fallback: connecteur ne supporte pas encore les kwargs avances.
+            search_kwargs.pop("max_days_old", None)
+            search_kwargs.pop("min_creation_date", None)
+            search_kwargs.pop("diameter_km", None)
+            raw = await _call_with_backoff(search_kwargs)
+        raw = self._filter_by_recency(raw, recency_hours)
+        raw = self._filter_by_location(raw, str(criteria.get("location") or ""), radius)
         out: list[JobOffer] = []
         for r in raw:
             out.append(JobOffer(
@@ -114,6 +220,8 @@ class ConnectorBackend:
                 source=self.name,
                 score=float(r.get("score", 0.0)) if isinstance(r.get("score"), (int, float)) else 0.0,
             ))
+        if ttl > 0:
+            self._cache[cache_key] = (time.time(), [JobOffer(**o.to_dict()) for o in out])
         return out
 
 

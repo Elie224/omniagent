@@ -1,6 +1,6 @@
 """Tests du registre d''agents (Vague B : focus Emploi).
 
-16 agents : 11 metier Emploi + 5 transverses.
+19 agents : 14 metier Emploi + 5 transverses.
 """
 import pytest
 from omniagent.core.registry.agent_registry import AgentSpec, registry
@@ -13,18 +13,19 @@ def reset_registry():
     yield
 
 
-def test_all_16_agents_registered():
-    """Vague B : 11 agents Emploi + 5 transverses = 16 agents (avec APEC et The Muse)."""
+def test_all_19_agents_registered():
+    """Vague B : 14 agents Emploi + 5 transverses = 19 agents."""
     register_all_agents()
     agents = registry.all()
-    assert len(agents) == 16, f"Attendu 16, obtenu {len(agents)} : {[a.name for a in agents]}"
+    assert len(agents) == 19, f"Attendu 19, obtenu {len(agents)} : {[a.name for a in agents]}"
     names = {a.name for a in agents}
     expected = {
-        # Emploi (11)
-        "agent_emploi", "agent_linkedin", "agent_indeed", "agent_hellowork",
-        "agent_adzuna", "agent_france_travail", "agent_wttj",
-        "agent_apec", "agent_themuse",
+        # Emploi (14)
+        "agent_emploi", "agent_adzuna", "agent_france_travail",
+        "agent_themuse",
         "agent_cv", "agent_lettre",
+        "agent_interview_coach", "agent_salary_benchmark", "agent_followup",
+        "agent_contact_enrichment", "agent_lettre_requirement", "agent_filtering_matching", "agent_mission_controller", "agent_application_sender",
         # Transverse (5)
         "agent_memory", "agent_knowledge", "agent_monitoring",
         "agent_planning", "agent_notification",
@@ -47,9 +48,9 @@ def test_transverse_agents_count():
 
 
 def test_emploi_agents_count():
-    """Vague B : 11 agents dans le module Emploi (6 de base + 5 plateformes additionnelles)."""
+    """Vague B : 14 agents dans le module Emploi."""
     register_all_agents()
     emploi = registry.list_by_module("emploi")
-    assert len(emploi) == 11
+    assert len(emploi) == 14
     names = {a.name for a in emploi}
     assert "agent_emploi" in names  # coordinateur
