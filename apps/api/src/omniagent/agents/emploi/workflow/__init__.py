@@ -384,12 +384,8 @@ class EnrichmentAgent:
             haystack = " ".join([str(description), str(company), str(url)])
             emails = list(set(self.EMAIL_RE.findall(haystack)))
             phones = list(set(self.PHONE_FR_RE.findall(haystack)))
-            # Si on n a rien trouve : on tente des emails derives du domaine (best-effort)
+            # Mode securise : on n invente jamais d adresse email.
             derived_emails: list[str] = []
-            domain = self._company_domain(company)
-            if not emails and domain:
-                derived_emails = [f"contact@{domain}", f"rh@{domain}"]
-                emails = derived_emails
             # Identification des roles probables
             contacts = {"hr": None, "ceo": None, "dg": None}
             for e in emails:
@@ -407,7 +403,7 @@ class EnrichmentAgent:
                     "phones": phones,
                     "contacts": contacts,
                     "confidence": round(confidence, 3),
-                    "source": "regex+derive" if derived_emails else "regex",
+                    "source": "regex",
                 },
             })
             confidences.append(confidence)
@@ -733,10 +729,8 @@ class ApplicationAgent:
     def _check_rbac(context: dict) -> tuple[bool, str]:
         """Verifie que le role du user autorise un envoi reel.
 
-        Politique opt-in : si le contexte ne fournit AUCUN role
-        (ni user_role ni role), on considere que le contexte est legacy /
-        pre-RBAC et on autorise l envoi (backward compat avec la Vague A).
-        Si un role est fourni, on applique la liste ALLOWED_ROLES.
+        Politique fail-closed : en absence de role explicite, l envoi reel
+        est interdit.
 
         Retourne (autorise, raison). Si pas autorise, l agent force dry_run
         et l approval devient informative (pas effective).
@@ -745,9 +739,7 @@ class ApplicationAgent:
         if user_role is None:
             user_role = context.get("role")
         if user_role is None:
-            # Opt-in : pas de role declare => pas de verification => on laisse
-            # passer (backward compat Vague A : approved=True envoyait).
-            return True, "no_role_declared_opt_in"
+            return False, "missing_role"
         if user_role in ApplicationAgent.ALLOWED_ROLES:
             return True, "ok"
         return False, f"role {user_role!r} not in {sorted(ApplicationAgent.ALLOWED_ROLES)}"

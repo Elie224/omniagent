@@ -8,7 +8,7 @@ from omniagent.core.config import settings
 from omniagent.core.logging import configure_logging
 from omniagent.core.observability.metrics import metrics
 from omniagent.core.security.audit import AuditLog
-from omniagent.auth.dependencies import CurrentUser, get_current_user
+from omniagent.auth.dependencies import CurrentUser, get_current_user, require_module_access
 from omniagent.api.v1.router import v1
 from omniagent.routes import router as root_router
 
@@ -138,12 +138,12 @@ async def orchestrator_run(req: OrchestratorRunRequest, request: Request, user: 
 
 class OrchestratorWorkflowRequest(BaseModel):
     """Requete explicite pour declencher le workflow Emploi structure (DAG)."""
-    workflow: str = "job_workflow"
+    workflow: str = "intent_research"
     context: dict = Field(default_factory=dict)
     dry_run: bool = True
 
 
-@app.post("/orchestrator/workflow")
+@app.post("/orchestrator/workflow", dependencies=[Depends(require_module_access("emploi", "agent_mission_controller"))])
 async def orchestrator_workflow(req: OrchestratorWorkflowRequest, request: Request, user: CurrentUser = Depends(get_current_user)):
     """Point d entree unique pour executer un workflow declaratif."""
     import time
@@ -158,10 +158,26 @@ async def orchestrator_workflow(req: OrchestratorWorkflowRequest, request: Reque
             detail=f"workflow inconnu: {req.workflow}. Disponibles: {workflow_registry.names()}",
         )
 
+    # Incident response: les anciens workflows "job_*" restent non alignes
+    # avec les garde-fous mission controller; on les bloque explicitement.
+    blocked_legacy_workflows = {"job_workflow", "job_search_dag", "job_search_quick", "cv_refresh"}
+    if req.workflow in blocked_legacy_workflows:
+        raise HTTPException(
+            status_code=403,
+            detail="workflow legacy bloque (utiliser /api/v1/employment/mission/run)",
+        )
+
+    if not req.dry_run:
+        raise HTTPException(
+            status_code=403,
+            detail="orchestrator/workflow impose dry_run=true (envoi reel via /api/v1/employment/mission/run)",
+        )
+
     ctx = dict(req.context or {})
     ctx["dry_run"] = req.dry_run
     ctx["tenant_id"] = user.tenant_id
     ctx["user_id"] = user.user_id
+    ctx["user_role"] = user.role.value
     ctx["workflow"] = wf.name
     ctx["workflow_version"] = wf.version
 

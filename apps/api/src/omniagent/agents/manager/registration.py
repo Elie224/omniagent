@@ -88,12 +88,3 @@ def register_all_agents() -> None:
     ]
     for s in specs:
         registry.register(s)
-    # Plan Emploi dedie (Vague B) : expose le workflow multi-agents du module Emploi
-    _register_job_workflow_planner()
-
-
-# --- Job workflow (Vague B) ---
-def _register_job_workflow_planner() -> None:
-    from omniagent.agents.emploi.workflow.planner import job_workflow_planner
-    from omniagent.core.orchestrator.planner import planner_registry
-    planner_registry.register(job_workflow_planner)
